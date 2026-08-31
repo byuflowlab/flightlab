@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from flightlab import stability
+from flightlab import loads, stability
 from flightlab.project import PropulsorSetup, example_project
 from flightlab.project_analysis import (
     TrimNotPossibleError,
@@ -29,6 +29,29 @@ def test_full_station_geometry_changes_vlm_even_with_same_root_and_tip():
 
     assert b.CL != pytest.approx(a.CL, abs=1e-4)
     assert b.Cm != pytest.approx(a.Cm, abs=1e-4)
+
+
+def test_span_load_can_select_a_named_surface_from_project_solution():
+    project = example_project()
+    solution = analyze(project, alpha=3.0, ns=18, nc=3)
+    aircraft = project.equivalent_aircraft()
+    wing = loads.span_load(
+        aircraft, mass=project.total_mass(), V=project.case().speed,
+        solution=solution, surface="Main wing",
+    )
+    tail = loads.span_load(
+        aircraft, mass=project.total_mass(), V=project.case().speed,
+        solution=solution, surface="Horizontal tail",
+    )
+
+    assert tail.y[-1] < wing.y[-1]
+    assert tail.root_moment != pytest.approx(wing.root_moment)
+
+    with pytest.raises(ValueError, match="unknown solution surface"):
+        loads.span_load(
+            aircraft, mass=project.total_mass(), V=project.case().speed,
+            solution=solution, surface="missing",
+        )
 
 
 def test_design_point_integrates_mass_trim_stability_and_drag():

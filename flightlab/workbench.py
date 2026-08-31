@@ -6,7 +6,7 @@ is deliberately optional; importing the numerical package does not import it.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from html import escape
 import io
 import math
@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import panel as pn
 
-from . import catalog, drag, foil, stability
+from . import catalog, drag, foil, loads, stability
 from .project import (
     AirfoilDefinition,
     AircraftProject,
@@ -38,6 +38,7 @@ from .project import (
 )
 from .project_analysis import (
     TrimNotPossibleError,
+    analyze as analyze_project,
     aircraft_polar,
     analyze_dynamic_stability,
     analyze_propulsion,
@@ -129,6 +130,7 @@ class Workbench:
         self.project = project or example_project()
         self._updating = False
         self._last_result = None
+        self._last_loads_result = None
 
         self.status = pn.pane.Alert("Ready.", alert_type="light")
         self.project_name = pn.widgets.TextInput(label="Project name")
@@ -246,6 +248,54 @@ class Workbench:
         self.drag_table = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=260)
         self.analysis_warnings = pn.pane.Alert(alert_type="warning", visible=False)
 
+        self.loads_case = pn.widgets.Select(label="Flight case atmosphere")
+        self.loads_surface = pn.widgets.Select(label="Structural lifting surface")
+        self.loads_cl_max = pn.widgets.FloatInput(
+            label="Maximum lift coefficient CLmax", value=1.4, start=0.1, step=0.05
+        )
+        self.loads_cl_min = pn.widgets.FloatInput(
+            label="Minimum lift coefficient CLmin", value=-0.8, end=-0.01, step=0.05
+        )
+        self.loads_n_pos = pn.widgets.FloatInput(
+            label="Positive limit load factor", value=3.8, start=0.1, step=0.1
+        )
+        self.loads_n_neg = pn.widgets.FloatInput(
+            label="Negative limit load factor", value=-1.5, end=-0.01, step=0.1
+        )
+        self.loads_v_max = pn.widgets.FloatInput(
+            label="Maximum/dive speed [m/s] (0 = 1.4 × case)", value=0.0, start=0.0, step=1.0
+        )
+        self.loads_gust = pn.widgets.FloatInput(
+            label="Sharp-edged gust speed [m/s]", value=15.24, start=0.0, step=0.5
+        )
+        self.loads_factor = pn.widgets.FloatInput(
+            label="Structural design load factor", value=3.8, start=0.1, step=0.1
+        )
+        self.loads_ns = pn.widgets.IntInput(
+            label="Spanwise panels", value=36, start=12, end=100
+        )
+        self.loads_spar_height = pn.widgets.FloatInput(
+            label="Distance between spar-cap centroids [m]", value=0.03, start=0.001, step=0.005
+        )
+        self.loads_allowable = pn.widgets.FloatInput(
+            label="Cap allowable stress [MPa]", value=300.0, start=0.1, step=10.0
+        )
+        self.loads_ultimate_factor = pn.widgets.FloatInput(
+            label="Limit-to-ultimate factor", value=1.5, start=1.0, step=0.05
+        )
+        self.loads_modulus = pn.widgets.FloatInput(
+            label="Cap elastic modulus [GPa]", value=70.0, start=0.1, step=1.0
+        )
+        self.loads_cap_width = pn.widgets.FloatInput(
+            label="Available cap width [m]", value=0.02, start=0.001, step=0.005
+        )
+        self.run_loads_button = pn.widgets.Button(
+            label="Run loads and spar sizing", color="primary", icon="player-play"
+        )
+        self.loads_metrics = pn.pane.HTML()
+        self.loads_plots = pn.pane.Matplotlib(height=680, tight=True, format="svg")
+        self.loads_warnings = pn.pane.Alert(alert_type="warning", visible=False)
+
         self.battery_select = pn.widgets.Select(label="Battery", options=sorted(catalog.BATTERIES))
         self.state_of_charge = pn.widgets.FloatInput(label="Battery state of charge", value=0.9, start=0.0, end=1.0, step=0.05)
         self.battery_x = pn.widgets.FloatInput(label="Battery x [m]", value=0.02, step=0.01)
@@ -348,6 +398,7 @@ class Workbench:
         self.airfoil_upload.param.watch(self._airfoil_uploaded, "value")
         self.run_airfoil_button.on_click(self.run_airfoil)
         self.run_analysis_button.on_click(self.run_integrated_analysis)
+        self.run_loads_button.on_click(self.run_loads_analysis)
         self.run_propulsion_button.on_click(self.run_propulsion_analysis)
         self.run_dynamics_button.on_click(self.run_dynamic_stability)
         self.motor_table.param.watch(self._motors_changed, "value")
@@ -416,6 +467,15 @@ class Workbench:
         case_names = [case.name for case in project.cases]
         self.analysis_case.options = case_names
         self.analysis_case.value = case_names[0] if case_names else None
+        self.loads_case.options = case_names
+        self.loads_case.value = case_names[0] if case_names else None
+        horizontal_names = [surface.name for surface in project.horizontal_surfaces]
+        self.loads_surface.options = horizontal_names
+        try:
+            structural_surface = project.primary_horizontal_surface.name
+        except ValueError:
+            structural_surface = horizontal_names[0] if horizontal_names else None
+        self.loads_surface.value = structural_surface
         self.project_download.filename = _safe_filename(project.name)
         self._refresh_airfoil_options()
         self._load_propulsion_library_tables()
@@ -691,6 +751,9 @@ class Workbench:
             self.analysis_case.options = names
             if self.analysis_case.value not in names:
                 self.analysis_case.value = names[0] if names else None
+            self.loads_case.options = names
+            if self.loads_case.value not in names:
+                self.loads_case.value = names[0] if names else None
             self._updating = False
             self._refresh_all("Flight cases updated.")
         except Exception as exc:
@@ -955,6 +1018,15 @@ class Workbench:
         editors = dict(self.mass_table.editors)
         editors["attached_to"] = {"type": "list", "values": [""] + names}
         self.mass_table.editors = editors
+        horizontal = [surface.name for surface in self.project.horizontal_surfaces]
+        current = self.loads_surface.value
+        self.loads_surface.options = horizontal
+        if current not in horizontal:
+            try:
+                current = self.project.primary_horizontal_surface.name
+            except ValueError:
+                current = horizontal[0] if horizontal else None
+            self.loads_surface.value = current
 
     def _airfoil_uploaded(self, event):
         if not event.new:
@@ -1361,6 +1433,179 @@ class Workbench:
         fig.tight_layout()
         self._replace_figure(self.analysis_plots, fig)
 
+    def run_loads_analysis(self, _=None):
+        """Run a project-aware maneuver/gust, span-load, and spar-cap analysis."""
+        self.run_loads_button.loading = True
+        self.status.object = "Running flight loads and spar sizing…"
+        self.status.alert_type = "primary"
+        try:
+            self.project.require_valid()
+            case = self.project.case(self.loads_case.value)
+            surface = self.project.surface_named(self.loads_surface.value)
+            if surface is None or surface.orientation != "horizontal":
+                raise ValueError("choose a horizontal structural lifting surface")
+
+            mass_properties = stability.mass_properties(self.project.components())
+            mass = mass_properties.mass
+            S_ref, _, c_ref = self.project.reference_quantities()
+            aircraft = self.project.equivalent_aircraft()
+            maximum_speed = None if self.loads_v_max.value <= 0 else self.loads_v_max.value
+            envelope = loads.vn_diagram(
+                aircraft,
+                mass=mass,
+                CL_max=self.loads_cl_max.value,
+                CL_min=self.loads_cl_min.value,
+                altitude=case.altitude,
+                n_pos=self.loads_n_pos.value,
+                n_neg=self.loads_n_neg.value,
+                V_max=maximum_speed,
+                reference_area=S_ref,
+            )
+
+            design_n = float(self.loads_factor.value)
+            if design_n <= 0:
+                raise ValueError("structural design load factor must be positive")
+            design_speed = float(envelope["V_A"])
+            load_case = replace(case, speed=design_speed, load_factor=design_n)
+            ns = int(self.loads_ns.value)
+            nc = min(int(self.analysis_nc.value), 6)
+
+            zero = analyze_project(
+                self.project, load_case, alpha=0.0, trim_deflection=0.0,
+                ns=ns, nc=nc, x_ref=mass_properties.x_cg,
+            )
+            one = analyze_project(
+                self.project, load_case, alpha=1.0, trim_deflection=0.0,
+                ns=ns, nc=nc, x_ref=mass_properties.x_cg,
+            )
+            lift_slope_per_degree = one.CL - zero.CL
+            if abs(lift_slope_per_degree) < 1e-8:
+                raise ValueError("the lifting-surface model has essentially zero lift-curve slope")
+            q = zero.q
+            target_cl = design_n * mass * loads.G0 / (q * S_ref)
+            alpha = (target_cl - zero.CL) / lift_slope_per_degree
+            solution = analyze_project(
+                self.project, load_case, alpha=alpha, trim_deflection=0.0,
+                ns=ns, nc=nc, x_ref=mass_properties.x_cg,
+            )
+            span = loads.span_load(
+                aircraft, mass=mass, n=design_n, V=design_speed,
+                altitude=case.altitude, ns=ns, solution=solution,
+                surface=surface.name,
+            )
+
+            sizing = loads.spar_sizing(
+                abs(span.root_moment),
+                height=self.loads_spar_height.value,
+                sigma_allow=self.loads_allowable.value * 1e6,
+                safety_factor=self.loads_ultimate_factor.value,
+            )
+            cap_width = float(self.loads_cap_width.value)
+            if cap_width <= 0:
+                raise ValueError("available cap width must be positive")
+            cap_thickness = sizing["cap_area"] / cap_width
+            elastic_modulus = self.loads_modulus.value * 1e9
+            if elastic_modulus <= 0:
+                raise ValueError("cap elastic modulus must be positive")
+            # Two equal caps of area A separated by h: I ≈ A h² / 2.
+            cap_EI = (
+                elastic_modulus * sizing["cap_area"]
+                * self.loads_spar_height.value**2 / 2.0
+            )
+            deflection = loads.tip_deflection(span, EI=cap_EI)
+
+            gust_speed = np.linspace(0.0, envelope["V_max"], 160)
+            lift_slope_per_radian = lift_slope_per_degree * 180.0 / np.pi
+            gust_positive = loads.gust_load_factor(
+                aircraft, gust_speed, gust=self.loads_gust.value, mass=mass,
+                CL_alpha=lift_slope_per_radian, altitude=case.altitude,
+                reference_area=S_ref, reference_chord=c_ref,
+            )
+            gust_negative = 2.0 - gust_positive
+
+            self._last_loads_result = {
+                "envelope": envelope,
+                "span_load": span,
+                "sizing": sizing,
+                "deflection": deflection,
+                "solution": solution,
+                "surface": surface.name,
+                "cap_thickness": cap_thickness,
+                "EI": cap_EI,
+            }
+            self.loads_metrics.object = self._metric_cards([
+                ("Aircraft mass", f"{mass:.4g} kg"),
+                ("Reference W/S", f"{envelope['wing_loading']:.4g} N/m²"),
+                ("Stall speed", f"{envelope['V_stall']:.3g} m/s"),
+                ("Corner speed", f"{envelope['V_A']:.3g} m/s"),
+                ("Structural case", f"n={design_n:.3g} at {design_speed:.3g} m/s"),
+                ("Solved angle of attack", f"{alpha:.3g}°"),
+                (f"{surface.name} root shear", f"{span.root_shear:.4g} N"),
+                ("Limit root moment", f"{abs(span.root_moment):.4g} N·m"),
+                ("Ultimate root moment", f"{sizing['ultimate_moment']:.4g} N·m"),
+                ("Required area, each cap", f"{1e6 * sizing['cap_area']:.4g} mm²"),
+                ("Required cap thickness", f"{1e3 * cap_thickness:.4g} mm"),
+                ("Cap-only EI", f"{cap_EI:.4g} N·m²"),
+                ("Tip deflection", f"{1e3 * deflection['tip_deflection']:.4g} mm"),
+                ("Tip / semispan", f"{100 * deflection['tip_over_semispan']:.3g}%"),
+            ])
+
+            fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.5))
+            ax = axes[0, 0]
+            ax.plot(envelope["V_upper"], envelope["n_upper"], label="positive maneuver")
+            ax.plot(envelope["V_lower"], envelope["n_lower"], label="negative maneuver")
+            ax.plot(gust_speed, gust_positive, "--", label="positive gust")
+            ax.plot(gust_speed, gust_negative, "--", label="negative gust")
+            ax.axvline(envelope["V_A"], color="0.45", lw=1, label="corner speed")
+            ax.set(xlabel="true airspeed [m/s]", ylabel="load factor n", title="Maneuver and gust envelope")
+            ax.legend(fontsize=7)
+
+            ax = axes[0, 1]
+            ax.plot(span.y, span.lift, color="#2563a6")
+            ax.set(xlabel="semispan station [m]", ylabel="net aerodynamic load [N/m]", title=f"{surface.name} span load")
+
+            ax = axes[1, 0]
+            shear_line = ax.plot(span.y, span.shear, color="#2f855a", label="shear")
+            ax.set(xlabel="semispan station [m]", ylabel="shear [N]", title="Internal shear and bending moment")
+            moment_axis = ax.twinx()
+            moment_line = moment_axis.plot(span.y, span.moment, color="#a64b35", label="moment")
+            moment_axis.set_ylabel("bending moment [N·m]")
+            ax.legend(shear_line + moment_line, ["shear", "moment"], fontsize=8)
+
+            ax = axes[1, 1]
+            ax.plot(deflection["y"], 1e3 * deflection["deflection"], color="#7b55a3")
+            ax.set(xlabel="semispan station [m]", ylabel="deflection [mm]", title="Cap-only beam deflection")
+            for axis in axes.ravel():
+                axis.grid(alpha=0.22)
+            moment_axis.grid(False)
+            fig.suptitle(f"{self.project.name} — loads and preliminary spar caps")
+            fig.tight_layout()
+            self._replace_figure(self.loads_plots, fig)
+
+            warnings = [
+                "The V–n envelope uses the aircraft reference area; the span load and root moment are for the selected lifting surface.",
+                "The structural VLM solve holds pitch-control deflection at zero and is linear through the entered CLmax boundary.",
+                "Distributed structural/fuel/battery mass is not yet applied as inertial relief, so the root moment is conservative when substantial mass lies in the wing.",
+                "The two-cap beam omits web sizing, buckling, joints, local loads, fatigue, aeroelasticity, and material knockdowns. The deflection uses cap stiffness only.",
+            ]
+            if design_n > envelope["n_pos"]:
+                warnings.insert(0, "The structural design factor exceeds the entered positive limit load factor.")
+            self.loads_warnings.object = "\n".join(f"• {item}" for item in warnings)
+            self.loads_warnings.alert_type = "warning"
+            self.loads_warnings.visible = True
+            self.status.object = f"Completed loads and spar sizing for {surface.name}."
+            self.status.alert_type = "success"
+        except Exception as exc:
+            self._last_loads_result = None
+            self.loads_metrics.object = ""
+            self.loads_warnings.object = f"{type(exc).__name__}: {exc}"
+            self.loads_warnings.alert_type = "danger"
+            self.loads_warnings.visible = True
+            self.status.object = "Loads and spar sizing failed; see the Loads & structures tab."
+            self.status.alert_type = "danger"
+        finally:
+            self.run_loads_button.loading = False
+
     def run_propulsion_analysis(self, _=None):
         self.run_propulsion_button.loading = True
         try:
@@ -1515,12 +1760,17 @@ class Workbench:
     def _refresh_generated_python(self):
         filename = _safe_filename(self.project.name)
         case_name = self.analysis_case.value or (self.project.cases[0].name if self.project.cases else "Cruise")
-        code = f'''import numpy as np
+        loads_v_max = None if self.loads_v_max.value <= 0 else float(self.loads_v_max.value)
+        code = f'''from dataclasses import replace
+
+import numpy as np
 import matplotlib.pyplot as plt
 
+from flightlab import loads, stability
 from flightlab.project import AircraftProject
 from flightlab.project_analysis import (
-    aircraft_polar, analyze_dynamic_stability, analyze_propulsion, run_design_point,
+    aircraft_polar, analyze as analyze_project, analyze_dynamic_stability,
+    analyze_propulsion, run_design_point,
 )
 
 project = AircraftProject.load({filename!r})
@@ -1545,6 +1795,51 @@ axes[0, 1].plot(polar.CD, polar.CL)
 axes[1, 0].plot(polar.alpha, polar.LD)
 axes[1, 1].plot(polar.alpha, polar.Cm)
 plt.show()
+
+# Maneuver/gust envelope, selected-surface span load, and two-cap spar sizing.
+mass_properties = stability.mass_properties(project.components())
+S_ref, _, c_ref = project.reference_quantities()
+envelope = loads.vn_diagram(
+    project.equivalent_aircraft(), mass=mass_properties.mass,
+    CL_max={self.loads_cl_max.value:.8g}, CL_min={self.loads_cl_min.value:.8g},
+    altitude=case.altitude, n_pos={self.loads_n_pos.value:.8g},
+    n_neg={self.loads_n_neg.value:.8g}, V_max={loads_v_max!r},
+    reference_area=S_ref,
+)
+load_case = replace(
+    case, speed=envelope["V_A"], load_factor={self.loads_factor.value:.8g}
+)
+zero = analyze_project(project, load_case, alpha=0.0, trim_deflection=0.0,
+                       ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
+                       x_ref=mass_properties.x_cg)
+one = analyze_project(project, load_case, alpha=1.0, trim_deflection=0.0,
+                      ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
+                      x_ref=mass_properties.x_cg)
+target_cl = (load_case.load_factor * mass_properties.mass * 9.80665
+             / (zero.q * S_ref))
+alpha_load = (target_cl - zero.CL) / (one.CL - zero.CL)
+load_solution = analyze_project(
+    project, load_case, alpha=alpha_load, trim_deflection=0.0,
+    ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
+    x_ref=mass_properties.x_cg,
+)
+span = loads.span_load(
+    project.equivalent_aircraft(), mass=mass_properties.mass,
+    n=load_case.load_factor, V=load_case.speed, altitude=load_case.altitude,
+    solution=load_solution, surface={self.loads_surface.value!r},
+)
+spar = loads.spar_sizing(
+    abs(span.root_moment), height={self.loads_spar_height.value:.8g},
+    sigma_allow={self.loads_allowable.value:.8g}e6,
+    safety_factor={self.loads_ultimate_factor.value:.8g},
+)
+cap_EI = ({self.loads_modulus.value:.8g}e9 * spar["cap_area"]
+          * {self.loads_spar_height.value:.8g}**2 / 2.0)
+beam = loads.tip_deflection(span, EI=cap_EI)
+print("corner speed [m/s] =", envelope["V_A"])
+print("root moment [N m] =", span.root_moment)
+print("required area of each cap [m^2] =", spar["cap_area"])
+print("cap-only tip deflection [m] =", beam["tip_deflection"])
 
 # Electric chain and thrust available versus airframe drag required.
 power = analyze_propulsion(project, case)
@@ -1643,6 +1938,27 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             self.analysis_case, self.analysis_ns, self.analysis_nc, self.run_analysis_button,
             sizing_mode="stretch_width",
         )
+        loads_help = pn.pane.Alert(
+            "This tab uses the current project's total mass, aircraft reference area, selected atmosphere, "
+            "and full-station VLM geometry. The V–n inputs define the maneuver envelope. The structural "
+            "case is evaluated at the positive corner speed and the separately entered design load factor. "
+            "Choose which horizontal surface carries the spar being sized. `CLmax`, limit factors, material "
+            "allowable, modulus, cap spacing, and cap width are design inputs—not values inferred from geometry. "
+            "The reported cap area is required for each of two equal caps.",
+            alert_type="light",
+        )
+        loads_controls = pn.Column(
+            pn.Row(self.loads_case, self.loads_surface, self.loads_ns),
+            "### Flight envelope and load case",
+            pn.Row(self.loads_cl_max, self.loads_cl_min, self.loads_n_pos, self.loads_n_neg),
+            pn.Row(self.loads_v_max, self.loads_gust, self.loads_factor),
+            "### Two-cap spar idealization",
+            pn.Row(
+                self.loads_spar_height, self.loads_allowable, self.loads_ultimate_factor,
+                self.loads_modulus, self.loads_cap_width,
+            ),
+            self.run_loads_button,
+        )
         body_help = pn.pane.Markdown(
             "Bodies contribute **parasite-drag geometry**, not mass. Use **streamlined** for a fuselage "
             "or nacelle (skin friction × form factor on wetted area); **bluff_round_member** for a round/bluff "
@@ -1740,6 +2056,10 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             ("Analysis", pn.Column(
                 analysis_controls, self.analysis_metrics, self.analysis_warnings,
                 self.analysis_plots, "### Component drag table", self.drag_table,
+            )),
+            ("Loads & structures", pn.Column(
+                loads_help, loads_controls, self.loads_metrics,
+                self.loads_warnings, self.loads_plots,
             )),
             ("Propulsion", pn.Column(
                 "The analysis closes every motor–propeller torque match on one shared, sagging battery "

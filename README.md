@@ -114,6 +114,9 @@ every surface station. Lifting-surface profile drag integrates each strip's loca
 Reynolds number, lift coefficient, and interpolated station airfoils; bodies use documented
 empirical correlations. Separate **Propulsion** and **Dynamic stability** tabs expose the
 electric-chain match, efficiency and power curves, and longitudinal/lateral eigenmodes.
+The **Loads & structures** tab uses the current project mass and geometry for maneuver/gust
+envelopes, a selected surface's VLM span load, shear and bending moment, preliminary two-cap
+spar sizing, and a cap-only beam-deflection estimate.
 Dynamic lifting-surface derivatives currently use the equivalent-surface adapter, augmented
 with empirical slender-body/crossflow derivatives and fixed-throttle propulsion derivatives;
 those limitations are shown next to the results.

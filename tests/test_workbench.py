@@ -39,6 +39,26 @@ def test_workbench_builds_and_runs_integrated_analysis():
     plt.close("all")
 
 
+def test_workbench_exposes_project_loads_and_spar_sizing():
+    workbench = Workbench()
+    view = workbench.view()
+    workbench.run_loads_analysis()
+
+    assert "Loads & structures" in view.main[0]._names
+    assert workbench.status.alert_type == "success"
+    result = workbench._last_loads_result
+    assert result is not None
+    assert result["surface"] == "Main wing"
+    assert result["span_load"].root_moment > 0
+    assert result["sizing"]["cap_area"] > 0
+    assert result["deflection"]["tip_deflection"] > 0
+    assert len(workbench.loads_plots.object.axes) >= 4
+    assert "required area of each cap" in workbench.python_output.object
+    generated = workbench.python_output.object.split("```python\n", 1)[1].rsplit("```", 1)[0]
+    compile(generated, "generated_flightlab_analysis.py", "exec")
+    plt.close("all")
+
+
 def test_table_coercion_accepts_numeric_strings_and_names_the_bad_field():
     rows = _coerce_records(
         pd.DataFrame([{"name": "wing", "chord": "0.42"}]),

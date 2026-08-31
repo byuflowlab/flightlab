@@ -63,6 +63,7 @@ def vn_diagram(
     n_neg: Optional[float] = None,
     V_max: Optional[float] = None,
     n_points: int = 200,
+    reference_area: Optional[float] = None,
 ) -> Dict[str, object]:
     """The manoeuvre envelope: load factor against speed.
 
@@ -87,6 +88,10 @@ def vn_diagram(
     V_max : float, optional
         Dive speed.  Defaults to ``1.4 V_cruise``.
     n_points : int
+    reference_area : float, optional
+        Wing/reference area used for wing loading. Defaults to the area of
+        ``aircraft.wing``. Pass the aircraft-level reference area for a
+        multi-surface project such as a biplane.
 
     Returns
     -------
@@ -131,7 +136,10 @@ def vn_diagram(
 
     air = atmos.at(altitude)
     W = mass * G0
-    ws = W / p.area
+    S_ref = p.area if reference_area is None else float(reference_area)
+    if S_ref <= 0:
+        raise ValueError(f"reference_area must be positive; got {S_ref!r} m^2")
+    ws = W / S_ref
 
     V_stall = float(np.sqrt(2.0 * ws / (air.density * CL_max)))
     V_A = float(V_stall * np.sqrt(abs(n_pos)))
@@ -180,6 +188,8 @@ def gust_load_factor(
     mass: Optional[float] = None,
     CL_alpha: float = 5.0,
     altitude: float = 0.0,
+    reference_area: Optional[float] = None,
+    reference_chord: Optional[float] = None,
 ) -> Union[float, np.ndarray]:
     """Load factor from a sharp-edged gust, with the standard alleviation factor.
 
@@ -208,9 +218,13 @@ def gust_load_factor(
     V_arr = np.asarray(V, dtype=float)
     if np.any(V_arr < 0):
         raise ValueError("V must contain nonnegative true airspeeds")
+    S_ref = p.area if reference_area is None else float(reference_area)
+    c_ref = p.mac if reference_chord is None else float(reference_chord)
+    if S_ref <= 0 or c_ref <= 0:
+        raise ValueError("reference_area and reference_chord must be positive")
     air = atmos.at(altitude)
-    ws = mass * G0 / p.area
-    mu = 2.0 * ws / (air.density * p.mac * CL_alpha * G0)
+    ws = mass * G0 / S_ref
+    mu = 2.0 * ws / (air.density * c_ref * CL_alpha * G0)
     K_g = 0.88 * mu / (5.3 + mu)
     result = 1.0 + air.density * V_arr * CL_alpha * K_g * gust / (2.0 * ws)
     return float(result) if result.ndim == 0 else result
@@ -235,6 +249,10 @@ class SpanLoad:
         Bending moment, N m, integrated inboard from the tip.
     n : float
         Load factor this was computed at.
+    total_lift : float
+        Net load integrated over both sides of the selected surface, N.
+    root_moment : float
+        Bending moment at the selected surface root, N m.
     """
 
     y: np.ndarray
@@ -266,6 +284,7 @@ def span_load(
     ns: int = 60,
     relief: Optional[np.ndarray] = None,
     solution: Optional["wing.Solution"] = None,
+    surface: Optional[str] = None,
 ) -> SpanLoad:
     """Running lift, shear and bending moment along the semispan.
 
@@ -293,6 +312,9 @@ def span_load(
         carry mass out there on purpose.
     solution : flightlab.wing.Solution, optional
         Reuse an existing solve.
+    surface : str, optional
+        Name of the lifting surface to integrate when ``solution`` contains
+        more than one. Defaults to the first surface in the solution.
 
     Returns
     -------
@@ -309,7 +331,13 @@ def span_load(
     sol = solution or wing.trim_to_weight(
         aircraft.wing, mass, V, altitude, n=n, ns=ns
     )
-    s = sol.surface_slices[sol.surfaces[0]]
+    surface_name = sol.surfaces[0] if surface is None else surface
+    if surface_name not in sol.surface_slices:
+        available = ", ".join(sol.surfaces)
+        raise ValueError(
+            f"unknown solution surface {surface_name!r}; choose one of: {available}"
+        )
+    s = sol.surface_slices[surface_name]
     y, ccl, ds = sol.y[s], sol.ccl[s], sol.ds[s]
 
     # one side only, root to tip
@@ -344,7 +372,9 @@ def span_load(
         shear=shear,
         moment=moment,
         n=float(n),
-        total_lift=float(sol.lift),
+        # This is the selected symmetric surface's net load, not the complete
+        # aircraft lift when a multi-surface solution was supplied.
+        total_lift=float(2.0 * shear[0]),
         root_moment=float(moment[0]),
     )
 

@@ -721,6 +721,16 @@ def test_the_corner_speed_is_the_stall_speed_times_root_n():
     assert vn["n_ultimate_pos"] == pytest.approx(1.5 * vn["n_pos"])
 
 
+def test_load_envelope_accepts_an_aircraft_level_reference_area():
+    ordinary = loads.vn_diagram(ASW27, mass=525.0, CL_max=1.4)
+    doubled = loads.vn_diagram(
+        ASW27, mass=525.0, CL_max=1.4,
+        reference_area=2.0 * geom.resolve(ASW27.wing).area,
+    )
+    assert doubled["wing_loading"] == pytest.approx(0.5 * ordinary["wing_loading"])
+    assert doubled["V_stall"] == pytest.approx(ordinary["V_stall"] / np.sqrt(2.0))
+
+
 def test_a_lighter_wing_loading_is_thrown_further_by_the_same_gust():
     light = loads.gust_load_factor(RC1, V=12.0)
     heavy = loads.gust_load_factor(C172, V=63.8)
