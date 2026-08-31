@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flightlab"
+version = "0.9.0"
+description = "FlightLab student analysis tools for BYU ME 415 Flight Vehicle Design"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "ME 415, Brigham Young University" }]
+
+# Verified against numpy 2.5.2, scipy 1.18.1, matplotlib 3.11.1,
+# neuralfoil 0.3.3 (aerosandbox 4.2.10).
+#
+# NeuralFoil is capped below 0.4: the network weights are part of the answer, so
+# a minor release can move every number in flightlab.foil.  tests/test_foil.py pins
+# the values the course quotes (the NACA 2412 lift slope of 2*pi at Re = 3e6 and
+# the three disagreeing low-Reynolds fits), so raising this cap should mean
+# running that file and re-recording ref.NEURALFOIL_NACA2412 -- not editing the
+# tolerances until it passes.
+dependencies = [
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "matplotlib>=3.6",
+    "neuralfoil>=0.3,<0.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+notebook = ["jupyterlab>=4.0", "ipywidgets>=8.0"]
+workbench = ["panel>=1.9,<2", "pandas>=1.5"]
+
+[project.scripts]
+flightlab = "flightlab.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["flightlab*"]
+
+[tool.setuptools.package-data]
+flightlab = ["data/airfoils/*.dat", "data/props/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::RuntimeWarning"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64", "win-64"]
+
+[tool.pixi.pypi-dependencies]
+flightlab = { path = ".", editable = true }
+
+[tool.pixi.environments]
+default = { solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+notebook = { features = ["notebook"], solve-group = "default" }
+workbench = { features = ["workbench"], solve-group = "default" }
+
+[tool.pixi.tasks]
+notebook = "jupyter lab notebooks/01_flight_condition_and_drag.ipynb"
+reference = "jupyter lab notebooks/reference_toolbox.ipynb"
+workbench = "python -m flightlab workbench"
+test = "pytest tests"
+
+[tool.pixi.dependencies]
+python = "3.12.*"
+jupyterlab = ">=4.6.3,<5"
+ipywidgets = ">=8.1.9,<9"
+pytest = ">=9.1.1,<10"
+panel = ">=1.9.4,<2"
+pandas = ">=2.3.3,<3"
