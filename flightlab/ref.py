@@ -66,7 +66,6 @@ __all__ = [
     "NEURALFOIL_NACA2412",
     "PUBLISHED_NACA2412",
     "NEURALFOIL_VS_PUBLISHED_NACA2412",
-    "DC3_COURSE_SOLUTION",
     "SATURN_V_S_IC_TARGETS",
     "CDP_WIDEBODY_CRUISE",
     "SWET_SREF_WIDEBODY",
@@ -664,32 +663,6 @@ UIUC_LOW_SPEED_AIRFOIL_DATA = {
 
 
 # --- whole-aircraft reference numbers --------------------------------------
-
-#: The existing course solution for the simplified DC-3 wing at 93 m/s and
-#: 11,000 kg, on the 79.75 m^2 trapezoidal planform.  PUBLISHED (course).
-#:
-#: These viscous-drag entries are WING ONLY. A whole-aircraft comparison adds the same nominal
-#: 1.6 m^2 non-wing drag area and non-wing interaction model to both methods.
-#: The gap between the handbook wing drag and the strip integration -- 2191 N
-#: against 1685 N -- is the assignment.  Note that the strip integration lands
-#: close to XFLR5's independent 1713 N, which is a second-method rung the
-#: handbook method does not get.
-DC3_COURSE_SOLUTION = {
-    "induced_drag": 1150.0,  # N, inviscid
-    "viscous_drag_handbook": 2191.0,  # N, Method A
-    "viscous_drag_strip": 1685.0,  # N, Method B
-    "viscous_drag_xflr5": 1713.0,  # N, independent check on Method B
-    "e_inv": 0.977,  # inviscid span efficiency of the simplified planform
-    "nonwing_drag_area_nominal": 1.6,  # m^2, COURSE MODEL
-    "nonwing_drag_area_range": (1.2, 2.0),  # m^2, COURSE MODEL
-    "conditions": {
-        "mass": 11000.0,
-        "speed": 93.0,
-        "altitude": 10000.0 * 0.3048,
-        "Sref": 79.75,
-    },
-    "source": "existing ME 415 course solution",
-}
 
 #: Saturn V S-IC values that R 1's sizing loop should land near.  PUBLISHED.
 #: Treat as the answer key, not as an input.

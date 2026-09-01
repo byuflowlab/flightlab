@@ -1,19 +1,11 @@
-"""End-to-end checks that the provided pieces actually compose.
-
-The important one is :func:`test_dc3_strip_integration_matches_course_solution`.
-The draft flagged an open question about whether ``lifting_line_coefficients``
-exposes per-span-station coefficients cleanly enough for HW 5's strip
-integration, and whether local chord and local Reynolds number are available at
-the *same* stations.  This file answers it: they are, and the resulting drag
-reproduces the existing course solution.
-"""
+"""End-to-end checks that the provided pieces actually compose."""
 
 import numpy as np
 import pytest
 from scipy.optimize import brentq
 
 from flightlab import catalog, foil, props, ref
-from flightlab.fleet import DC3, RC1
+from flightlab.fleet import RC1
 from flightlab.vlm import (
     Cosine,
     Freestream,
@@ -64,101 +56,6 @@ def _solve_trapezoid(b, S, cr, ct, alpha, V, ns=60, nc=4, x_ref=None):
     system = steady_analysis([grid], r, fs, symmetric=True, ratios=[ratios])
     CF, _ = body_forces(system, frame=Stability())
     return system, CF[2], far_field_drag(system)
-
-
-def test_dc3_strip_integration_matches_course_solution():
-    """HW 5, both halves, on the DC-3's simplified trapezoidal wing.
-
-    Reproduces the existing course solution's inviscid span efficiency, its
-    induced drag, and its strip-integrated viscous drag -- the last from a
-    different section solver than the one that produced the reference value, so
-    agreement within a few percent is the expected outcome, not an exact match.
-    """
-    w = DC3.wing
-    b, S, cr, ct = w.span, w.area, w.root_chord, w.tip_chord
-    V = DC3.operating["cruise_speed"]
-    _, _, rho, mu = atmosphere(DC3.operating["cruise_altitude"])
-    q = 0.5 * rho * V**2
-    W = DC3.mass["gross"] * ref.ATMOS_CONSTANTS["g0"]
-    CL_req = W / (q * S)
-    AR = w.aspect_ratio
-    sol = ref.DC3_COURSE_SOLUTION
-
-    # trim on alpha to carry the weight
-    alpha = brentq(
-        lambda a: _solve_trapezoid(b, S, cr, ct, a, V)[1] - CL_req,
-        -2.0, 8.0, xtol=1e-9,
-    )
-    system, CL, CDi = _solve_trapezoid(b, S, cr, ct, alpha, V)
-    assert CL == pytest.approx(CL_req, rel=1e-8)
-
-    # --- inviscid: span efficiency and induced drag --------------------
-    e_inv = CL**2 / (np.pi * AR * CDi)
-    assert e_inv == pytest.approx(sol["e_inv"], abs=0.005)
-    assert CDi * q * S == pytest.approx(sol["induced_drag"], rel=0.02)
-
-    # --- per-station output HW 5 needs ---------------------------------
-    r_ll, c_ll = lifting_line_geometry(system.grids)
-    cf, _ = lifting_line_coefficients(system, r_ll, c_ll, frame=Stability())
-    y = r_ll[0][1, :]
-    ds = np.linalg.norm(np.diff(r_ll[0], axis=1), axis=0)
-    chord = 0.5 * (c_ll[0][:-1] + c_ll[0][1:])
-    y_mid = 0.5 * (y[:-1] + y[1:])
-    cl_local = cf[0][2, :]
-    Re_local = rho * V * chord / mu
-
-    # everything the strip integral needs, at the same stations
-    assert cl_local.shape == chord.shape == Re_local.shape == y_mid.shape
-    assert np.all(chord > 0) and np.all(Re_local > 0)
-    assert chord.max() == pytest.approx(cr, rel=0.01)
-    assert chord.min() == pytest.approx(ct, rel=0.01)
-
-    # the identity: strip lift equals total lift equals weight
-    L_strip = 2.0 * np.sum(cl_local * chord * ds) * q
-    assert L_strip == pytest.approx(W, rel=1e-8)
-
-    # --- Method B: integrate section drag along the span ---------------
-    # each station gets its own cl at its own local Reynolds number
-    alphas = np.linspace(-6.0, 12.0, 181)
-    cd = np.empty_like(chord)
-    for i in range(len(chord)):
-        section = "naca2215" if y_mid[i] < b / 4 else "naca2206"
-        pol = foil.aero(section, alphas, Re_local[i])
-        a_i = np.interp(cl_local[i], pol["cl"], alphas)
-        cd[i] = np.interp(a_i, alphas, pol["cd"])
-        # HW 5's bounds rung, asserted inside the loop as the assignment asks
-        assert cd[i] > ref.laminar_flat_plate_cf(Re_local[i])
-
-    Dv = 2.0 * np.sum(cd * q * chord * ds)
-
-    # within a few percent of the course value and of XFLR5's independent one,
-    # both of which came from XFOIL rather than from NeuralFoil
-    assert Dv == pytest.approx(sol["viscous_drag_strip"], rel=0.08)
-    assert Dv == pytest.approx(sol["viscous_drag_xflr5"], rel=0.08)
-    # and comfortably below the handbook method, which is the point of HW 5
-    assert Dv < 0.85 * sol["viscous_drag_handbook"]
-
-
-def test_dc3_reference_area_bookkeeping_changes_the_coefficient():
-    """HW 5's cheapest demonstration: a CD is meaningless without its area."""
-    w = DC3.wing
-    V = DC3.operating["cruise_speed"]
-    _, _, rho, _ = atmosphere(DC3.operating["cruise_altitude"])
-    q = 0.5 * rho * V**2
-    W = DC3.mass["gross"] * ref.ATMOS_CONSTANTS["g0"]
-
-    S_trap = w.area
-    S_real = DC3.published["wing_area_actual"]
-    system, CL, CDi = _solve_trapezoid(
-        w.span, S_trap, w.root_chord, w.tip_chord, 4.0, V
-    )
-    D = CDi * q * S_trap  # a force, independent of the reference area
-    CD_trap = D / (q * S_trap)
-    CD_real = D / (q * S_real)
-    assert CD_trap > CD_real
-    assert CD_trap / CD_real == pytest.approx(S_real / S_trap, rel=1e-9)
-    # the smaller wing flies at the higher CL for the same weight
-    assert W / (q * S_trap) > W / (q * S_real)
 
 
 def test_rc1_wing_and_tail_trim_and_neutral_point():

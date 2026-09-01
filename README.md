@@ -114,6 +114,11 @@ every surface station. Lifting-surface profile drag integrates each strip's loca
 Reynolds number, lift coefficient, and interpolated station airfoils; bodies use documented
 empirical correlations. Separate **Propulsion** and **Dynamic stability** tabs expose the
 electric-chain match, efficiency and power curves, and longitudinal/lateral eigenmodes.
+Airfoil curves, the Analysis polar and spanwise solution, the Propulsion speed sweep, and the
+Loads span-load/deflection solution can be downloaded as unit-labeled CSV files for
+calculations and plots beyond the workbench. Propulsion sweep limits and point count are
+editable, so a characteristic speed or thrust/drag crossing need not depend on the selected
+flight case's default plotting range.
 The **Loads & structures** tab uses the current project mass and geometry for maneuver/gust
 envelopes, a selected surface's VLM span load, shear and bending moment, preliminary two-cap
 spar sizing, and a cap-only beam-deflection estimate.

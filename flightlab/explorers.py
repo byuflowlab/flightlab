@@ -18,7 +18,7 @@ from typing import Callable, Dict
 import numpy as np
 
 from . import airfoil, atmos, catalog, drag, geom, loads, performance, propulsion, stability, wing
-from .fleet import ASW27, C172, DC3, RC1
+from .fleet import ASW27, C172, RC1
 
 
 def _notebook_dependencies():
@@ -124,7 +124,7 @@ def _explorer(
 def flight_condition_explorer():
     """Atmosphere, nondimensional conditions, and parasite-drag sources."""
     widgets, *_ = _notebook_dependencies()
-    aircraft = {"Cessna 172S": C172, "RC-1": RC1, "Douglas DC-3": DC3}
+    aircraft = {"Cessna 172S": C172, "RC-1": RC1, "ASW-27B": ASW27}
     controls = {
         "aircraft": widgets.Dropdown(options=aircraft, value=C172, description="Aircraft"),
         "speed": widgets.FloatSlider(value=50.0, min=5.0, max=120.0, step=1.0, description="TAS [m/s]", continuous_update=False),
@@ -377,7 +377,7 @@ print(trim.alpha, trim.tail_incidence, trim.static_margin)'''
 def drag_explorer():
     """Complete polar and drag-component explorer."""
     widgets, *_ = _notebook_dependencies()
-    aircraft = {"Cessna 172S": C172, "Douglas DC-3": DC3, "RC-1": RC1}
+    aircraft = {"Cessna 172S": C172, "ASW-27B": ASW27, "RC-1": RC1}
     controls = {
         "aircraft": widgets.Dropdown(options=aircraft, value=C172, description="Aircraft"),
         "speed": widgets.FloatSlider(value=50.0, min=8.0, max=120.0, step=1.0, description="TAS [m/s]", continuous_update=False),

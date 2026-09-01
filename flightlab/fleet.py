@@ -1,10 +1,10 @@
-"""``flightlab.fleet`` -- the nine fleet vehicles as importable data.
+"""``flightlab.fleet`` -- the focused course fleet as importable data.
 
 Transcription errors look exactly like physics errors, so nobody should type
 specification tables repeatedly.  Import the numbers instead::
 
-    from flightlab.fleet import (RC1, B787, ASW27, ASG29, F16, DC3, C172,
-                             JobyS4, SaturnV)
+    from flightlab.fleet import (RC1, B787, ASW27, ASG29, C172, JobyS4,
+                                 SaturnV)
 
 **Tables only.**  This module holds geometry, component masses, and published
 performance.  Building grids from it is :mod:`flightlab.geom`; computing mass
@@ -46,8 +46,6 @@ __all__ = [
     "B787",
     "ASW27",
     "ASG29",
-    "F16",
-    "DC3",
     "C172",
     "JobyS4",
     "SaturnV",
@@ -752,147 +750,6 @@ ASG29 = Aircraft(
 )
 
 
-# --- F-16C ------------------------------------------------------------------
-
-F16 = Aircraft(
-    name="Lockheed Martin F-16C",
-    label="F16",
-    aircraft_class="supersonic fighter",
-    notes=(
-        "Low aspect ratio, thin sections, and a load factor that changes what "
-        "the structure is for. A note on the span: the published 9.96 m is "
-        "measured over the wingtip missile launcher rails. The aerodynamic "
-        "reference span for the trapezoidal wing is about 9.45 m, and it is "
-        "that value which is consistent with the widely quoted aspect ratio of "
-        "3.2 and the published 300 ft^2 area. Use 9.45 m -- and notice that "
-        "you just resolved a discrepancy between two published numbers by "
-        "checking them against a third, which is a verification rung applied "
-        "to a data sheet rather than to code. No 4%-thick 64A section file is "
-        "public, so use t/c = 0.04 directly for structure and naca64a210 if "
-        "you need coordinates."
-    ),
-    wing=Planform(
-        span=9.45,
-        area=27.87,
-        taper=0.20,
-        sweep_le_deg=40.0,
-        section="NACA 64A204",
-        section_file="naca64a210",
-        thickness=0.04,
-        notes="area 300 ft^2; span over tip launchers is 9.96 m (32 ft 8 in)",
-    ),
-    bodies=(Body(name="fuselage", length=15.06, notes="49 ft 5 in overall"),),
-    mass={
-        "empty": 8573.0,
-        "gross": 12020.0,
-        "mtow": 19187.0,
-        "fuel_internal": 3175.0,
-    },
-    operating={"max_mach": 2.05, "max_mach_altitude": 40000.0 * FT},
-    limits={"n_pos": 9.0, "n_neg": -3.0},
-    placeholders={},
-    published={"static_margin_subsonic": -0.05, "span_over_launchers": 9.96},
-    structure={},
-    propulsion={
-        "engine": "F110-GE-129",
-        "count": 1,
-        "thrust_dry": 76.3e3,
-        "thrust_afterburning": 131e3,
-    },
-    sources=(
-        "USAF fact sheet",
-        "Frawley, International Directory of Military Aircraft",
-        "F-16C/D Block 50/52+ flight manual",
-        "Lednicer, The Incomplete Guide to Airfoil Usage",
-    ),
-    estimated=frozenset(
-        {
-            "wing.span",
-            "wing.taper",
-            "wing.sweep_le_deg",
-            "published.static_margin_subsonic",
-        }
-    ),
-)
-
-
-# --- Douglas DC-3 -----------------------------------------------------------
-
-DC3 = Aircraft(
-    name="Douglas DC-3 (DC-3A-S1C3G)",
-    label="DC3",
-    aircraft_class="1930s propeller transport",
-    notes=(
-        "Low Mach, high Reynolds number, and real published data to check "
-        "against. The course wing model is a SIMPLIFIED single trapezoidal "
-        "panel: span 29.0 m, root chord 4.4 m, tip chord 1.1 m, giving "
-        "S = 79.75 m^2 and AR = 10.55, with no twist. That is 13% less area "
-        "than the real 91.7 m^2 wing, because the real wing has a wide, nearly "
-        "constant-chord centre section carrying the fuselage and the two engine "
-        "nacelles, and a straight taper cannot reproduce it. We simplify anyway "
-        "because a single trapezoid is what a vortex lattice wants and what the "
-        "classical hand analysis assumed. Use the SAME reference area in both "
-        "methods and in every coefficient -- a drag coefficient is meaningless "
-        "without its reference area. And report the result as 'the L/D of a "
-        "79.75 m^2 trapezoidal wing at 11,000 kg', not as 'the L/D of a DC-3'."
-    ),
-    wing=Planform(
-        span=29.0,
-        area=79.75,
-        root_chord=4.4,
-        tip_chord=1.1,
-        taper=0.25,
-        twist_deg=0.0,
-        section="NACA 2215 root, NACA 2206 tip",
-        section_file="naca2215",
-        thickness=0.105,
-        notes=(
-            "The simplified single-taper planform the course analyzes; the "
-            "real wing is 91.7 m^2 with AR 9.17.  thickness is the MEAN of the "
-            "root (0.15) and tip (0.06) sections, which is what a whole-wing "
-            "form factor wants -- using the root value alone puts the form "
-            "factor 10% high and the wing's parasitic drag 11% high.  The "
-            "individual section thicknesses are in published[]."
-        ),
-    ),
-    bodies=(Body(name="fuselage", length=19.7, notes="overall length"),),
-    mass={"empty": 7650.0, "gross": 11000.0, "gross_published": 11431.0},
-    operating={
-        "cruise_speed": 93.0,
-        "cruise_altitude": 10000.0 * FT,
-        "cruise_speed_published": 183.0 * KT,
-        "max_speed": 223.0 * KT,
-        "max_speed_altitude": 8500.0 * FT,
-        "stall_speed": 68.0 * KT,
-        "service_ceiling": 23200.0 * FT,
-    },
-    limits={},
-    placeholders={"nonwing_drag_area": 1.6, "nonwing_drag_area_range": (1.2, 2.0)},
-    published={
-        "wing_area_actual": 91.7,
-        "aspect_ratio_actual": 9.17,
-        "thickness_root": 0.15,
-        "thickness_tip": 0.06,
-        "classical_cl_stations": (0.275, 0.266, 0.317, 0.363, 0.0),
-    },
-    structure={},
-    propulsion={
-        "engine": "Pratt & Whitney R-1830 Twin Wasp",
-        "count": 2,
-        "power_each": 1200.0 * HP,
-        "propeller_diameter": 3.5,
-        "propeller_blades": 3,
-        "propeller_type": "constant speed",
-    },
-    sources=("Francillon, McDonnell Douglas Aircraft since 1920",),
-    estimated=frozenset(
-        {"wing.area", "wing.root_chord", "wing.tip_chord", "wing.taper",
-         "mass.gross", "operating.cruise_speed", "operating.cruise_altitude",
-         "placeholders.nonwing_drag_area", "placeholders.nonwing_drag_area_range"}
-    ),
-)
-
-
 # --- Cessna 172S Skyhawk ----------------------------------------------------
 
 C172 = Aircraft(
@@ -901,20 +758,19 @@ C172 = Aircraft(
     aircraft_class="light general-aviation single",
     notes=(
         "The aircraft students have the most physical intuition about, and it "
-        "sits between RC-1 and the DC-3 in every dimension that matters: "
+        "provides a useful general-aviation scale between RC-1 and a transport: "
         "Re ~ 3e6, Mach 0.19, 1157 kg. Its wing is a NACA 2412, which is "
         "bundled, and its performance is published to the decimal in a POH "
         "that has to be right because pilots fly on it.\n\n"
         "Two things to know before analyzing it. First, the wing modelled here "
         "is a SIMPLIFIED single trapezoid; the real wing is constant-chord "
-        "inboard and tapered only outboard, exactly like the DC-3's. The span "
+        "inboard and tapered only outboard. The span "
         "and area are the published ones and the taper is fitted to the "
         "outboard panel, so the chords below are area-consistent rather than "
         "measured. Second, Cessna publishes span 36 ft 1 in, area 174 sq ft "
         "AND aspect ratio 7.32, and those three numbers are not consistent: "
-        "36.083^2 / 174 = 7.48. Reconciling them is the same exercise the "
-        "F-16's two spans set, applied to a document that thousands of people "
-        "fly behind."
+        "36.083^2 / 174 = 7.48. Reconciling those values is a useful data-sheet "
+        "consistency check on a document that thousands of people fly behind."
     ),
     wing=Planform(
         span=11.00,
@@ -1197,7 +1053,7 @@ SaturnV = Rocket(
 
 #: All winged fleet aircraft, keyed by label.
 AIRCRAFT = {
-    a.label: a for a in (RC1, B787, ASW27, ASG29, F16, DC3, C172, JobyS4)
+    a.label: a for a in (RC1, B787, ASW27, ASG29, C172, JobyS4)
 }
 
 #: Everything, including the launch vehicle.

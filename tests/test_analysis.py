@@ -24,7 +24,7 @@ from flightlab import (
     wing,
 )
 from flightlab.case import Case
-from flightlab.fleet import ASW27, B787, C172, DC3, F16, RC1
+from flightlab.fleet import ASW27, B787, C172, RC1
 
 G0 = 9.80665
 
@@ -80,7 +80,7 @@ def test_eas_and_tas_invert():
 # --- geometry ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize("label", ["RC1", "B787", "ASW27", "ASG29", "F16", "DC3", "C172"])
+@pytest.mark.parametrize("label", ["RC1", "B787", "ASW27", "ASG29", "C172"])
 def test_every_resolved_planform_integrates_back_to_its_published_area(label):
     """The chord distribution has to reproduce the area it was resolved from.
 
@@ -134,7 +134,7 @@ def ASG29_wing():
 
 
 def test_sweep_conversion_round_trips():
-    p = geom.resolve(F16.wing)
+    p = geom.resolve(B787.wing)
     assert geom.sweep_at(p, 0.25) == pytest.approx(p.sweep_c4_deg, abs=1e-9)
     assert geom.sweep_at(p, 0.0) == pytest.approx(p.sweep_le_deg, abs=1e-9)
 
@@ -196,21 +196,10 @@ def test_table_lookups_are_fast_enough_for_a_slider():
 # --- wing -------------------------------------------------------------------
 
 
-def test_dc3_reproduces_the_existing_course_solution():
-    """The regression that carried over from draft3, unchanged."""
-    sol = ref.DC3_COURSE_SOLUTION
-    s = wing.trim_to_weight(
-        DC3.wing, DC3.mass["gross"], 93.0, DC3.operating["cruise_altitude"],
-        ns=60, nc=4, camber=False,
-    )
-    assert s.e_inv == pytest.approx(sol["e_inv"], abs=0.005)
-    assert s.induced_drag == pytest.approx(sol["induced_drag"], rel=0.02)
-
-
 def test_strip_lift_integrates_to_total_lift_and_to_the_weight():
     """The identity every span-load result rests on."""
-    m = DC3.mass["gross"]
-    s = wing.trim_to_weight(DC3.wing, m, 93.0, 3048.0, ns=60, nc=4, camber=False)
+    m = ASW27.mass["gross"]
+    s = wing.trim_to_weight(ASW27.wing, m, 29.0, 0.0, ns=60, nc=4, camber=False)
     assert s.strip_lift == pytest.approx(s.lift, rel=1e-9)
     assert s.lift == pytest.approx(m * G0, rel=1e-9)
 
@@ -279,17 +268,6 @@ def test_longitudinal_derivatives_do_not_care_about_the_mirroring():
 
 
 # --- drag -------------------------------------------------------------------
-
-
-def test_dc3_strip_integration_lands_near_the_course_solution():
-    sol = ref.DC3_COURSE_SOLUTION
-    s = wing.trim_to_weight(
-        DC3.wing, DC3.mass["gross"], 93.0, 3048.0, ns=60, nc=4, camber=False
-    )
-    t = airfoil.table("naca2215", Re=(1e6, 3e7), n_Re=12)
-    r = drag.strip_viscous_drag(s, table=t)
-    assert r["drag"] == pytest.approx(sol["viscous_drag_strip"], rel=0.05)
-    assert r["drag"] == pytest.approx(sol["viscous_drag_xflr5"], rel=0.05)
 
 
 def test_flat_plate_friction_matches_the_classical_values():
@@ -361,54 +339,10 @@ def test_the_book_formulas_are_the_ones_implemented():
 
 
 def test_wing_wetted_area_follows_the_texts_expression():
-    p = geom.resolve(DC3.wing)
+    p = geom.resolve(B787.wing)
     assert geom.wetted_area(p) == pytest.approx(
         2 * (1 + 0.2 * p.thickness) * p.area, rel=1e-12
     )
-
-
-def test_the_dc3_handbook_buildup_reproduces_the_course_script():
-    """Pinned against ``homework/hw3/2025/dc3wing.py``, term by term.
-
-    Two things this test exists to prevent recurring.  The reference figure of
-    2191 N is **viscous** drag: parasitic plus the lift-dependent term
-    ``K CDp CL^2``, not parasitic alone.  And the form factor uses the *mean*
-    of the root and tip thicknesses, 0.105, not the root's 0.15 -- taking the
-    root value alone puts the form factor 10% high.
-
-    What is left over is 0.2%, and it is the script's viscosity: it uses
-    1.7115e-5 where Sutherland's law at its own stated speed of sound gives
-    1.692e-5.
-    """
-    V, h = 93.0, 3048.0
-    air = atmos.at(h)
-    q = air.q(V)
-    p = geom.resolve(DC3.wing)
-
-    assert p.thickness == pytest.approx(0.105)
-    assert geom.wetted_area(p) == pytest.approx(162.849, rel=1e-4)
-    assert drag.form_factor_surface(
-        p.thickness, air.mach(V), p.sweep_c4_deg
-    ) == pytest.approx(1.2223, rel=1e-3)
-
-    b = drag.buildup(
-        DC3, V, h, interference=0.0, protuberance=0.0, include=["wing"]
-    )
-    Dp = b.f * q
-    CL = DC3.mass["gross"] * G0 / (q * p.area)
-    Dvl = 0.38 * (b.f / p.area) * CL**2 * q * p.area
-
-    assert Dp == pytest.approx(2095.8, rel=0.01)
-    assert Dvl == pytest.approx(95.3, rel=0.01)
-    assert Dp + Dvl == pytest.approx(
-        ref.DC3_COURSE_SOLUTION["viscous_drag_handbook"], rel=0.005
-    )
-
-
-def test_a_body_with_no_published_cross_section_is_skipped_and_named():
-    b = drag.buildup(DC3, 93.0, 3048.0)
-    assert "fuselage" in b.skipped
-    assert "not resolved" in b.table()
 
 
 def test_bluff_items_dominate_a_fixed_gear_singles_parasitic_drag():

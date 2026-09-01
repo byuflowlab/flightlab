@@ -129,8 +129,13 @@ class Workbench:
     def __init__(self, project: Optional[AircraftProject] = None):
         self.project = project or example_project()
         self._updating = False
+        self._last_airfoil_result = None
+        self._last_airfoil_alpha = None
+        self._last_airfoil_context = None
         self._last_result = None
+        self._last_polar = None
         self._last_loads_result = None
+        self._last_propulsion_result = None
 
         self.status = pn.pane.Alert("Ready.", alert_type="light")
         self.project_name = pn.widgets.TextInput(label="Project name")
@@ -233,6 +238,10 @@ class Workbench:
         self.run_airfoil_button = pn.widgets.Button(
             label="Run airfoil analysis", color="primary", icon="player-play"
         )
+        self.airfoil_download = pn.widgets.FileDownload(
+            label="Download airfoil CSV", icon="download",
+            callback=self._download_airfoil_csv, disabled=True,
+        )
         self.airfoil_plot = pn.pane.Matplotlib(height=620, tight=True, format="svg")
         self.airfoil_metrics = pn.pane.HTML()
         self.airfoil_diagnostics = pn.pane.Alert(alert_type="light")
@@ -242,6 +251,14 @@ class Workbench:
         self.analysis_nc = pn.widgets.IntInput(label="Chordwise panels", value=4, start=2, end=12)
         self.run_analysis_button = pn.widgets.Button(
             label="Run integrated design point", color="primary", icon="player-play"
+        )
+        self.analysis_download = pn.widgets.FileDownload(
+            label="Download polar CSV", icon="download",
+            callback=self._download_analysis_csv, disabled=True,
+        )
+        self.analysis_span_download = pn.widgets.FileDownload(
+            label="Download spanwise CSV", icon="download",
+            callback=self._download_spanwise_csv, disabled=True,
         )
         self.analysis_metrics = pn.pane.HTML()
         self.analysis_plots = pn.pane.Matplotlib(height=650, tight=True, format="svg")
@@ -271,6 +288,10 @@ class Workbench:
         self.loads_factor = pn.widgets.FloatInput(
             label="Structural design load factor", value=3.8, start=0.1, step=0.1
         )
+        self.loads_design_speed = pn.widgets.FloatInput(
+            label="Structural design speed [m/s] (0 = positive corner)",
+            value=0.0, start=0.0, step=1.0,
+        )
         self.loads_ns = pn.widgets.IntInput(
             label="Spanwise panels", value=36, start=12, end=100
         )
@@ -291,6 +312,10 @@ class Workbench:
         )
         self.run_loads_button = pn.widgets.Button(
             label="Run loads and spar sizing", color="primary", icon="player-play"
+        )
+        self.loads_download = pn.widgets.FileDownload(
+            label="Download span-load CSV", icon="download",
+            callback=self._download_loads_csv, disabled=True,
         )
         self.loads_metrics = pn.pane.HTML()
         self.loads_plots = pn.pane.Matplotlib(height=680, tight=True, format="svg")
@@ -340,6 +365,19 @@ class Workbench:
         self.add_propeller_point_button = pn.widgets.Button(label="Add coefficient point", icon="plus")
         self.delete_propeller_point_button = pn.widgets.Button(label="Delete selected point", icon="trash")
         self.run_propulsion_button = pn.widgets.Button(label="Run propulsion analysis", color="primary", icon="player-play")
+        self.propulsion_speed_min = pn.widgets.FloatInput(
+            label="Sweep minimum speed [m/s] (0 = automatic)", value=0.0, start=0.0, step=1.0
+        )
+        self.propulsion_speed_max = pn.widgets.FloatInput(
+            label="Sweep maximum speed [m/s] (0 = automatic)", value=0.0, start=0.0, step=1.0
+        )
+        self.propulsion_speed_points = pn.widgets.IntInput(
+            label="Sweep points", value=19, start=5, end=201
+        )
+        self.propulsion_download = pn.widgets.FileDownload(
+            label="Download speed sweep CSV", icon="download",
+            callback=self._download_propulsion_csv, disabled=True,
+        )
         self.propulsion_metrics = pn.pane.HTML()
         self.propulsor_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=220)
         self.propulsion_plot = pn.pane.Matplotlib(height=560, tight=True, format="svg")
@@ -441,9 +479,27 @@ class Workbench:
             self.include_propulsion_masses,
         ):
             widget.param.watch(self._propulsion_changed, "value")
-        self.analysis_case.param.watch(lambda _: self._refresh_generated_python(), "value")
-        self.analysis_ns.param.watch(lambda _: self._refresh_generated_python(), "value")
-        self.analysis_nc.param.watch(lambda _: self._refresh_generated_python(), "value")
+        for widget in (
+            self.airfoil_select, self.airfoil_re, self.airfoil_alpha_min,
+            self.airfoil_alpha_max, self.airfoil_transition,
+        ):
+            widget.param.watch(self._airfoil_inputs_changed, "value")
+        self.analysis_case.param.watch(self._analysis_inputs_changed, "value")
+        self.analysis_ns.param.watch(self._analysis_inputs_changed, "value")
+        self.analysis_nc.param.watch(self._analysis_inputs_changed, "value")
+        for widget in (
+            self.loads_case, self.loads_surface, self.loads_cl_max, self.loads_cl_min,
+            self.loads_n_pos, self.loads_n_neg, self.loads_v_max, self.loads_gust,
+            self.loads_factor, self.loads_design_speed, self.loads_ns, self.loads_spar_height,
+            self.loads_allowable, self.loads_ultimate_factor, self.loads_modulus,
+            self.loads_cap_width,
+        ):
+            widget.param.watch(self._analysis_inputs_changed, "value")
+        for widget in (
+            self.propulsion_speed_min, self.propulsion_speed_max,
+            self.propulsion_speed_points,
+        ):
+            widget.param.watch(self._analysis_inputs_changed, "value")
 
     def _load_project(self, project: AircraftProject):
         self._updating = True
@@ -493,6 +549,7 @@ class Workbench:
         self._refresh_all("Project loaded.")
 
     def _refresh_all(self, message="Project updated."):
+        self._invalidate_export_results()
         self._refresh_validation()
         self._refresh_geometry()
         self._refresh_attachment_options()
@@ -503,6 +560,20 @@ class Workbench:
         self.status.object = message
         self.status.alert_type = "light"
 
+    def _analysis_inputs_changed(self, _):
+        if self._updating:
+            return
+        self._invalidate_export_results()
+        self._refresh_generated_python()
+
+    def _airfoil_inputs_changed(self, _):
+        if self._updating:
+            return
+        self._last_airfoil_result = None
+        self._last_airfoil_alpha = None
+        self._last_airfoil_context = None
+        self.airfoil_download.disabled = True
+
     def _project_metadata_changed(self, _):
         if self._updating:
             return
@@ -512,6 +583,145 @@ class Workbench:
 
     def _download_project(self):
         return io.BytesIO((self.project.to_json() + "\n").encode("utf-8"))
+
+    def _invalidate_export_results(self):
+        """Prevent downloads from silently describing an earlier project state."""
+        self._last_airfoil_result = None
+        self._last_airfoil_alpha = None
+        self._last_airfoil_context = None
+        self._last_result = None
+        self._last_polar = None
+        self._last_loads_result = None
+        self._last_propulsion_result = None
+        self.airfoil_download.disabled = True
+        self.analysis_download.disabled = True
+        self.analysis_span_download.disabled = True
+        self.loads_download.disabled = True
+        self.propulsion_download.disabled = True
+
+    def _download_airfoil_csv(self):
+        """Export the most recent airfoil sweep with model diagnostics."""
+        if self._last_airfoil_result is None or self._last_airfoil_alpha is None:
+            raise ValueError("run the airfoil analysis before downloading its sweep")
+        result = self._last_airfoil_result
+        alpha = self._last_airfoil_alpha
+        context = self._last_airfoil_context
+        count = len(alpha)
+        frame = pd.DataFrame({
+            "airfoil": np.repeat(context["airfoil"], count),
+            "reynolds_number": np.repeat(context["reynolds_number"], count),
+            "forced_transition_x_c": np.repeat(context["transition"], count),
+            "alpha_deg": alpha,
+            "cl": result["cl"],
+            "cd": result["cd"],
+            "cm_about_c4": result["cm"],
+            "upper_transition_x_c": result["top_xtr"],
+            "lower_transition_x_c": result["bot_xtr"],
+            "model_confidence": result["confidence"],
+        })
+        return io.BytesIO(frame.to_csv(index=False).encode("utf-8"))
+
+    def _download_analysis_csv(self):
+        """Export the most recent integrated-analysis polar with its case metadata."""
+        if self._last_result is None or self._last_polar is None:
+            raise ValueError("run the integrated analysis before downloading its polar")
+        result = self._last_result
+        polar = self._last_polar
+        case = result.case
+        count = len(polar.alpha)
+        frame = pd.DataFrame({
+            "project": np.repeat(result.project_name, count),
+            "case": np.repeat(case.name, count),
+            "reference_speed_m_s": np.repeat(case.speed, count),
+            "altitude_m": np.repeat(case.altitude, count),
+            "mass_kg": np.repeat(result.mass_properties.mass, count),
+            "alpha_deg": polar.alpha,
+            "CL": polar.CL,
+            "CD": polar.CD,
+            "CD_profile_body": polar.CD_profile,
+            "CD_induced": polar.CD_i,
+            "Cm_about_cg": polar.Cm,
+            "L_over_D": polar.LD,
+            "trim_control_deg": np.repeat(polar.trim_deflection, count),
+        })
+        return io.BytesIO(frame.to_csv(index=False).encode("utf-8"))
+
+    def _download_spanwise_csv(self):
+        """Export station-level results from the most recent integrated analysis."""
+        if self._last_result is None:
+            raise ValueError("run the integrated analysis before downloading spanwise results")
+        result = self._last_result
+        solution = result.trim.solution
+        frames = []
+        for surface_name in solution.surfaces:
+            view = solution.surface(surface_name)
+            count = len(view.y)
+            frames.append(pd.DataFrame({
+                "project": np.repeat(result.project_name, count),
+                "case": np.repeat(result.case.name, count),
+                "surface": np.repeat(surface_name, count),
+                "mass_kg": np.repeat(result.mass_properties.mass, count),
+                "alpha_deg": np.repeat(solution.alpha, count),
+                "y_m": view.y,
+                "strip_width_m": view.ds,
+                "chord_m": view.chord,
+                "section_cl": view.cl,
+                "span_loading_c_cl_m": view.ccl,
+                "section_cm": view.cm_section,
+                "reynolds_number": view.Re,
+            }))
+        return io.BytesIO(pd.concat(frames, ignore_index=True).to_csv(index=False).encode("utf-8"))
+
+    def _download_loads_csv(self):
+        """Export the structural span-load and deflection distributions."""
+        if self._last_loads_result is None:
+            raise ValueError("run loads and spar sizing before downloading the span load")
+        result = self._last_loads_result
+        span = result["span_load"]
+        deflection = result["deflection"]
+        count = len(span.y)
+        frame = pd.DataFrame({
+            "project": np.repeat(self.project.name, count),
+            "case": np.repeat(result["case"], count),
+            "surface": np.repeat(result["surface"], count),
+            "load_factor": np.repeat(result["load_factor"], count),
+            "y_m": span.y,
+            "net_aerodynamic_load_N_per_m": span.lift,
+            "shear_N": span.shear,
+            "bending_moment_N_m": span.moment,
+            "deflection_m": deflection["deflection"],
+        })
+        return io.BytesIO(frame.to_csv(index=False).encode("utf-8"))
+
+    def _download_propulsion_csv(self):
+        """Export the most recent propulsion/airframe speed sweep."""
+        if self._last_propulsion_result is None:
+            raise ValueError("run the propulsion analysis before downloading its speed sweep")
+        result = self._last_propulsion_result
+        case = self.project.case(self.analysis_case.value)
+        count = len(result.speed)
+        data = {
+            "project": np.repeat(self.project.name, count),
+            "case": np.repeat(case.name, count),
+            "altitude_m": np.repeat(case.altitude, count),
+            "load_factor": np.repeat(case.load_factor, count),
+            "speed_true_m_s": result.speed,
+            "thrust_available_N": result.thrust_available,
+            "drag_required_N": result.drag_required,
+            "battery_current_A": result.current,
+            "power_electrical_W": result.power_electrical,
+            "power_shaft_W": result.power_shaft,
+            "power_useful_W": result.power_useful,
+            "efficiency_motor": result.efficiency_motor,
+            "efficiency_propeller": result.efficiency_propeller,
+            "efficiency_esc": result.efficiency_esc,
+            "efficiency_total": result.efficiency_total,
+            "outside_propeller_data": result.extrapolated,
+        }
+        for index, propulsor in enumerate(self.project.propulsion.propulsors):
+            data[f"rpm_{index + 1}_{propulsor.name}"] = result.rpm[:, index]
+        frame = pd.DataFrame(data)
+        return io.BytesIO(frame.to_csv(index=False).encode("utf-8"))
 
     def _open_project(self, event):
         if not event.new:
@@ -1056,6 +1266,19 @@ class Workbench:
                 xtr_lower=self.airfoil_transition.value,
                 model_size="xlarge",
             )
+            self._last_airfoil_result = result
+            self._last_airfoil_alpha = alpha
+            self._last_airfoil_context = {
+                "airfoil": self.airfoil_select.value,
+                "reynolds_number": float(self.airfoil_re.value),
+                "transition": float(self.airfoil_transition.value),
+            }
+            section_stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", self.airfoil_select.value).lower()
+            transition_stem = f"xtr_{self.airfoil_transition.value:.3g}".replace(".", "p")
+            self.airfoil_download.filename = (
+                f"{section_stem}_re_{self.airfoil_re.value:.6g}_{transition_stem}.csv"
+            )
+            self.airfoil_download.disabled = False
             selected = self.airfoil_plots.value or ["Lift curve"]
             cols = 2
             rows = math.ceil(len(selected) / cols)
@@ -1107,6 +1330,10 @@ class Workbench:
             )
             self.airfoil_diagnostics.alert_type = "warning" if minimum_confidence < 0.5 else "light"
         except Exception as exc:
+            self._last_airfoil_result = None
+            self._last_airfoil_alpha = None
+            self._last_airfoil_context = None
+            self.airfoil_download.disabled = True
             self.airfoil_metrics.object = ""
             self.airfoil_diagnostics.object = f"Airfoil analysis failed: {type(exc).__name__}: {exc}"
             self.airfoil_diagnostics.alert_type = "danger"
@@ -1345,6 +1572,13 @@ class Workbench:
                 ns=self.analysis_ns.value, nc=self.analysis_nc.value,
             )
             self._last_result = result
+            self._last_polar = polar
+            stem = _safe_filename(self.project.name).removesuffix(".flightlab.json")
+            case_stem = _safe_filename(case.name).removesuffix(".flightlab.json")
+            self.analysis_download.filename = f"{stem}_{case_stem}_polar.csv"
+            self.analysis_download.disabled = False
+            self.analysis_span_download.filename = f"{stem}_{case_stem}_spanwise.csv"
+            self.analysis_span_download.disabled = False
             trim = result.trim
             self.analysis_metrics.object = self._metric_cards([
                 ("Mass", f"{result.mass_properties.mass:.3f} kg"),
@@ -1369,6 +1603,10 @@ class Workbench:
             self.status.object = f"Completed integrated analysis for {case.name}."
             self.status.alert_type = "success"
         except TrimNotPossibleError as exc:
+            self._last_result = None
+            self._last_polar = None
+            self.analysis_download.disabled = True
+            self.analysis_span_download.disabled = True
             self.analysis_metrics.object = self._metric_cards([
                 ("Trim status", "Not possible within entered control limits"),
             ])
@@ -1378,6 +1616,10 @@ class Workbench:
             self.status.object = "The selected flight case cannot be trimmed with the entered control geometry and limits."
             self.status.alert_type = "danger"
         except Exception as exc:
+            self._last_result = None
+            self._last_polar = None
+            self.analysis_download.disabled = True
+            self.analysis_span_download.disabled = True
             self.analysis_metrics.object = ""
             self.analysis_warnings.object = f"{type(exc).__name__}: {exc}"
             self.analysis_warnings.alert_type = "danger"
@@ -1465,7 +1707,16 @@ class Workbench:
             design_n = float(self.loads_factor.value)
             if design_n <= 0:
                 raise ValueError("structural design load factor must be positive")
-            design_speed = float(envelope["V_A"])
+            entered_design_speed = float(self.loads_design_speed.value)
+            design_speed = (
+                float(envelope["V_A"]) if entered_design_speed == 0.0
+                else entered_design_speed
+            )
+            if design_speed <= 0.0 or design_speed > envelope["V_max"]:
+                raise ValueError(
+                    "structural design speed must be positive and no greater than "
+                    "the maneuver-envelope maximum speed"
+                )
             load_case = replace(case, speed=design_speed, load_factor=design_n)
             ns = int(self.loads_ns.value)
             nc = min(int(self.analysis_nc.value), 6)
@@ -1524,6 +1775,8 @@ class Workbench:
             gust_negative = 2.0 - gust_positive
 
             self._last_loads_result = {
+                "case": case.name,
+                "load_factor": design_n,
                 "envelope": envelope,
                 "span_load": span,
                 "sizing": sizing,
@@ -1533,6 +1786,10 @@ class Workbench:
                 "cap_thickness": cap_thickness,
                 "EI": cap_EI,
             }
+            stem = _safe_filename(self.project.name).removesuffix(".flightlab.json")
+            surface_stem = _safe_filename(surface.name).removesuffix(".flightlab.json")
+            self.loads_download.filename = f"{stem}_{surface_stem}_span_load.csv"
+            self.loads_download.disabled = False
             self.loads_metrics.object = self._metric_cards([
                 ("Aircraft mass", f"{mass:.4g} kg"),
                 ("Reference W/S", f"{envelope['wing_loading']:.4g} N/m²"),
@@ -1597,6 +1854,7 @@ class Workbench:
             self.status.alert_type = "success"
         except Exception as exc:
             self._last_loads_result = None
+            self.loads_download.disabled = True
             self.loads_metrics.object = ""
             self.loads_warnings.object = f"{type(exc).__name__}: {exc}"
             self.loads_warnings.alert_type = "danger"
@@ -1610,7 +1868,25 @@ class Workbench:
         self.run_propulsion_button.loading = True
         try:
             case = self.project.case(self.analysis_case.value)
-            result = analyze_propulsion(self.project, case)
+            minimum_speed = float(self.propulsion_speed_min.value)
+            maximum_speed = float(self.propulsion_speed_max.value)
+            if minimum_speed == 0.0 and maximum_speed == 0.0:
+                speed = None
+            else:
+                if minimum_speed <= 0.0 or maximum_speed <= minimum_speed:
+                    raise ValueError(
+                        "set both propulsion sweep limits with 0 < minimum < maximum, "
+                        "or set both to zero for the automatic range"
+                    )
+                speed = np.linspace(
+                    minimum_speed, maximum_speed, int(self.propulsion_speed_points.value)
+                )
+            result = analyze_propulsion(self.project, case, speed=speed)
+            self._last_propulsion_result = result
+            stem = _safe_filename(self.project.name).removesuffix(".flightlab.json")
+            case_stem = _safe_filename(case.name).removesuffix(".flightlab.json")
+            self.propulsion_download.filename = f"{stem}_{case_stem}_speed_sweep.csv"
+            self.propulsion_download.disabled = False
             derivatives = propulsion_derivatives(self.project, case)
             point = result.operating_point
             self.propulsion_metrics.object = self._metric_cards([
@@ -1684,6 +1960,8 @@ class Workbench:
             self.status.object = f"Completed propulsion analysis for {case.name}."
             self.status.alert_type = "success"
         except Exception as exc:
+            self._last_propulsion_result = None
+            self.propulsion_download.disabled = True
             self.propulsion_warnings.object = f"{type(exc).__name__}: {exc}"
             self.propulsion_warnings.visible = True
             self.propulsion_warnings.alert_type = "danger"
@@ -1806,8 +2084,9 @@ envelope = loads.vn_diagram(
     n_neg={self.loads_n_neg.value:.8g}, V_max={loads_v_max!r},
     reference_area=S_ref,
 )
+design_speed = {self.loads_design_speed.value:.8g} or envelope["V_A"]
 load_case = replace(
-    case, speed=envelope["V_A"], load_factor={self.loads_factor.value:.8g}
+    case, speed=design_speed, load_factor={self.loads_factor.value:.8g}
 )
 zero = analyze_project(project, load_case, alpha=0.0, trim_deflection=0.0,
                        ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
@@ -1932,16 +2211,17 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             pn.Row(self.airfoil_select, self.airfoil_upload),
             pn.Row(self.airfoil_re, self.airfoil_alpha_min, self.airfoil_alpha_max, self.airfoil_transition),
             self.airfoil_plots,
-            self.run_airfoil_button,
+            pn.Row(self.run_airfoil_button, self.airfoil_download),
         )
         analysis_controls = pn.Row(
-            self.analysis_case, self.analysis_ns, self.analysis_nc, self.run_analysis_button,
+            self.analysis_case, self.analysis_ns, self.analysis_nc,
+            self.run_analysis_button, self.analysis_download, self.analysis_span_download,
             sizing_mode="stretch_width",
         )
         loads_help = pn.pane.Alert(
             "This tab uses the current project's total mass, aircraft reference area, selected atmosphere, "
             "and full-station VLM geometry. The V–n inputs define the maneuver envelope. The structural "
-            "case is evaluated at the positive corner speed and the separately entered design load factor. "
+            "case uses the entered design speed and load factor; a zero design speed selects the positive corner. "
             "Choose which horizontal surface carries the spar being sized. `CLmax`, limit factors, material "
             "allowable, modulus, cap spacing, and cap width are design inputs—not values inferred from geometry. "
             "The reported cap area is required for each of two equal caps.",
@@ -1951,13 +2231,16 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             pn.Row(self.loads_case, self.loads_surface, self.loads_ns),
             "### Flight envelope and load case",
             pn.Row(self.loads_cl_max, self.loads_cl_min, self.loads_n_pos, self.loads_n_neg),
-            pn.Row(self.loads_v_max, self.loads_gust, self.loads_factor),
+            pn.Row(
+                self.loads_v_max, self.loads_gust,
+                self.loads_design_speed, self.loads_factor,
+            ),
             "### Two-cap spar idealization",
             pn.Row(
                 self.loads_spar_height, self.loads_allowable, self.loads_ultimate_factor,
                 self.loads_modulus, self.loads_cap_width,
             ),
-            self.run_loads_button,
+            pn.Row(self.run_loads_button, self.loads_download),
         )
         body_help = pn.pane.Markdown(
             "Bodies contribute **parasite-drag geometry**, not mass. Use **streamlined** for a fuselage "
@@ -2001,7 +2284,14 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
                 alert_type="light",
             ),
             pn.Row(self.battery_select, self.state_of_charge, self.include_propulsion_masses),
-            pn.Row(self.battery_x, self.battery_y, self.battery_z, self.run_propulsion_button),
+            pn.Row(
+                self.propulsion_speed_min, self.propulsion_speed_max,
+                self.propulsion_speed_points,
+            ),
+            pn.Row(
+                self.battery_x, self.battery_y, self.battery_z,
+                self.run_propulsion_button, self.propulsion_download,
+            ),
             "### Propulsors",
             self.propulsor_table,
             pn.Row(self.add_propulsor_button, self.delete_propulsor_button),

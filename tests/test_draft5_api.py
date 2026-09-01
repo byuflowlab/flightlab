@@ -70,7 +70,7 @@ def test_every_named_draft5_homework_interface_exists():
         for name in names:
             assert callable(getattr(module, name)), f"missing {module.__name__}.{name}"
 
-    for name in ("RC1", "C172", "B787", "ASW27", "F16", "DC3", "JobyS4"):
+    for name in ("RC1", "C172", "B787", "ASW27", "ASG29", "JobyS4"):
         assert getattr(flightlab.fleet, name) is not None
     assert "B3S1300" in catalog.BATTERIES
     assert "P10x7" in catalog.PROPELLERS

@@ -49,7 +49,7 @@ Submodules
     NeuralFoil section aerodynamics: ``cl``, ``cd``, ``cm`` and a confidence
     metric, from a NACA designation or coordinates.
 ``flightlab.fleet``
-    The eight fleet vehicles as importable geometry and component mass tables.
+    The focused course fleet as importable geometry and component mass tables.
 ``flightlab.props``
     UIUC propeller data files and a reader.
 ``flightlab.catalog``

@@ -26,8 +26,7 @@ def test_wing_area_is_consistent_with_the_chords(label):
 
 @pytest.mark.parametrize(
     "label,published_AR",
-    [("RC1", 7.5), ("B787", 9.59), ("ASW27", 25.0), ("ASG29", 30.9),
-     ("F16", 3.2), ("DC3", 10.55)],
+    [("RC1", 7.5), ("B787", 9.59), ("ASW27", 25.0), ("ASG29", 30.9)],
 )
 def test_aspect_ratio_matches_published(label, published_AR):
     a = fleet.AIRCRAFT[label]
@@ -41,15 +40,11 @@ def test_no_aircraft_stores_a_redundant_aspect_ratio():
     the fleet page listed the ASG 29 at AR 30.4 alongside an 18.0 m span and a
     10.5 m^2 area, which give 30.86.  Deriving it makes that impossible.
 
-    The F-16 is not an instance of this: its 9.96 m over the launcher rails and
-    its 9.45 m reference span measure two different things, and both are kept
-    on purpose.
-
     Two suffixes are allowed, and only because they name numbers that are *not*
     the modelled wing's ``b^2/S``:
 
     ``_actual``
-        the real wing, where the course analyzes a simplified one (the DC-3).
+        the real wing, where the course analyzes a simplified one.
     ``_published``
         what the manufacturer prints, where it disagrees with its own span and
         area (the Cessna 172S: 36 ft 1 in and 174 sq ft give 7.48, and Cessna
@@ -81,9 +76,8 @@ def test_c172_published_aspect_ratio_disagrees_with_its_own_span_and_area():
     """Cessna's own three numbers are not mutually consistent, and we keep it.
 
     The POH gives span 36 ft 1 in, area 174 sq ft, and aspect ratio 7.32.  The
-    first two give 7.48.  This is the same exercise as the F-16's two spans,
-    applied to a document thousands of people fly behind, and HW 1 asks
-    students to find it.
+    first two give 7.48, a useful consistency check on a document thousands of
+    people fly behind.
     """
     a = fleet.C172
     assert a.wing.aspect_ratio == pytest.approx(7.483, rel=1e-3)
@@ -112,7 +106,7 @@ def test_the_two_sailplanes_are_comparable_for_hw4():
     assert fleet.ASG29.wing.aspect_ratio > fleet.ASW27.wing.aspect_ratio
 
 
-@pytest.mark.parametrize("label", ["RC1", "B787", "ASW27", "F16", "DC3"])
+@pytest.mark.parametrize("label", ["RC1", "B787", "ASW27"])
 def test_taper_matches_the_chords(label):
     w = fleet.AIRCRAFT[label].wing
     if w.root_chord is None or w.tip_chord is None or w.taper is None:
@@ -165,7 +159,7 @@ def test_every_aircraft_names_its_sources():
 
 def test_stand_in_sections_are_flagged_and_resolvable():
     """A stand-in must be detectable and its coordinates must actually load."""
-    for label in ("ASW27", "F16"):
+    for label in ("ASW27",):
         w = fleet.AIRCRAFT[label].wing
         assert w.is_stand_in, f"{label}'s stand-in section is not flagged"
         sec = foil.load(w.section_file)
@@ -177,20 +171,6 @@ def test_asw27_stand_in_thickness_is_close_to_the_real_section():
     real = fleet.ASW27.wing.thickness  # 0.134, the DU 89-134/14
     stand_in = foil.load(fleet.ASW27.wing.section_file).thickness
     assert abs(stand_in - real) < 0.01
-
-
-def test_dc3_simplified_planform_is_smaller_than_the_real_wing():
-    """The 13% area gap HW 5 is built around."""
-    a = fleet.DC3
-    gap = 1.0 - a.wing.area / a.published["wing_area_actual"]
-    assert 0.12 < gap < 0.14
-
-
-def test_f16_reference_span_reconciles_the_published_aspect_ratio():
-    """The data-sheet verification rung: 9.96 m is over the launcher rails."""
-    a = fleet.F16
-    assert a.wing.aspect_ratio == pytest.approx(3.2, rel=0.01)
-    assert a.published["span_over_launchers"] > a.wing.span
 
 
 def test_saturn_v_stage_masses_match_the_reference_targets():

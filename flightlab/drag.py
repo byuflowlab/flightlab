@@ -20,10 +20,10 @@ the spanwise variation the buildup averages away.  It resolves only the wing.
 :mod:`flightlab.wing`.
 
     >>> from flightlab import drag
-    >>> from flightlab.fleet import DC3
-    >>> b = drag.buildup(DC3, V=93.0, altitude=3000.0)
+    >>> from flightlab.fleet import C172
+    >>> b = drag.buildup(C172, V=50.0, altitude=0.0)
     >>> round(b.CD0, 5), round(b.f, 3)
-    (0.00863, 0.688)
+    (0.02433, 0.393)
 
 Units
 -----
@@ -458,8 +458,8 @@ class Buildup:
     V, altitude, mach : float
     skipped : tuple of str
         Bodies whose cross-section the sources do not publish, so no wetted
-        area could be computed.  The DC-3's fuselage is one: the course model
-        carries it, the nacelles and the gear together in ``f_other`` instead.
+        area could be computed. A buildup with a non-empty ``skipped`` list
+        needs an explicit ``f_other`` allowance to represent the missing items.
         A buildup with a non-empty ``skipped`` is not a whole-aircraft drag
         estimate unless ``f_other`` covers what is missing.
     """
@@ -591,8 +591,6 @@ def buildup(
         more for a small RC model.
     f_other : float
         Flat drag area for items the geometry does not resolve at all, m^2.
-        The DC-3's simplified geometry has no fuselage, nacelles or gear, and
-        the course carries 1.6 m^2 here to stand in for them.
     cooling : float
         Cooling drag area, m^2 -- momentum lost by air pushed through an
         engine's cooling fins and out again.  Zero for a jet, a sailplane or an
