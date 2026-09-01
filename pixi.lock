@@ -9445,7 +9445,7 @@ packages:
   - ipywidgets>=8.0 ; extra == 'notebook'
   - panel>=1.9,<2 ; extra == 'workbench'
   - pandas>=1.5 ; extra == 'workbench'
-  requires_python: '>=3.9'
+  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/05/30/f1079e169c0fabb3479dc397148b74e5cfe195592aa9045c195d7578815d/casadi-3.8.0-cp311-abi3-win_amd64.whl
   name: casadi
   version: 3.8.0

@@ -14,7 +14,8 @@ included because those are developed in class.
 
 FlightLab is a normal Python package. Use whichever environment manager you already have;
 the project does not require Pixi. Run the commands from the cloned repository directory
-that contains `pyproject.toml`.
+that contains `pyproject.toml`. Python 3.10 through 3.13 is supported; the Pixi environment
+allows that range rather than pinning one minor release.
 
 ```bash
 git clone https://github.com/byuflowlab/flightlab.git
@@ -109,7 +110,12 @@ It opens locally in a browser. No FlightLab server or account is involved. A pro
 
 The **Analysis** tab runs mass and CG, full-station VLM, longitudinal trim, lifting-surface
 neutral point, and component profile/body drag as one design point. It also plots the aircraft
-lift curve, drag polar, lift-to-drag ratio, pitching moment, and span loading. The VLM retains
+lift curve, drag polar, lift-to-drag ratio, pitching moment, and span loading. Completed flight
+cases are cached until the project or panel resolution changes. The selected-case table reports
+CL and total CD explicitly. The primary wing is compared with an ellipse carrying that wing's
+same integrated lift; a separate stall view compares each strip's local section cl with the
+airfoil clmax at its local Reynolds number and estimates the aircraft CL/angle where the first
+strip reaches its limit. The VLM retains
 every surface station. Lifting-surface profile drag integrates each strip's local chord,
 Reynolds number, lift coefficient, and interpolated station airfoils; bodies use documented
 empirical correlations. Separate **Propulsion** and **Dynamic stability** tabs expose the
@@ -131,6 +137,9 @@ The **Loads & structures** tab defaults to a direct RC design case specified by 
 and load factor. A maneuver/gust V–n envelope remains an optional mode. Both modes use the
 current project mass and geometry for a selected surface's VLM span load, shear and bending
 moment, preliminary two-cap spar sizing, and a cap-only beam-deflection estimate.
+The generated Python uses the same project-level `analyze_structure` entry point as the
+workbench, keeping the structures example at the same abstraction level as aerodynamics,
+propulsion, and dynamic stability.
 Dynamic lifting-surface derivatives currently use the equivalent-surface adapter, augmented
 with empirical slender-body/crossflow derivatives and fixed-throttle propulsion derivatives;
 those limitations are shown next to the results.

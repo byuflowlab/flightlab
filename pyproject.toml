@@ -7,7 +7,7 @@ name = "flightlab"
 version = "0.9.0"
 description = "FlightLab student analysis tools for BYU ME 415 Flight Vehicle Design"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "ME 415, Brigham Young University" }]
 
@@ -65,7 +65,7 @@ workbench = "python -m flightlab workbench"
 test = "pytest tests"
 
 [tool.pixi.dependencies]
-python = "3.12.*"
+python = ">=3.10,<3.14"
 jupyterlab = ">=4.6.3,<5"
 ipywidgets = ">=8.1.9,<9"
 pytest = ">=9.1.1,<10"

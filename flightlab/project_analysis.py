@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from . import airfoil, atmos, drag, propulsion, stability, wing
+from . import airfoil, atmos, drag, loads as structural_loads, propulsion, stability, wing
 from .project import AircraftProject, FlightCase, LiftingSurface
 from .vlm import (
     Cosine,
@@ -36,6 +36,7 @@ __all__ = [
     "DesignPoint",
     "ProjectDragBuildup",
     "AircraftPolar",
+    "ProjectStructuralAnalysis",
     "PropulsionSystemPoint",
     "PropulsionAnalysis",
     "PropulsionDerivatives",
@@ -45,7 +46,9 @@ __all__ = [
     "neutral_point",
     "run_design_point",
     "profile_drag_buildup",
+    "surface_section_cl_max",
     "aircraft_polar",
+    "analyze_structure",
     "analyze_propulsion",
     "propulsion_derivatives",
     "analyze_dynamic_stability",
@@ -114,6 +117,24 @@ class AircraftPolar:
     LD: np.ndarray
     trim_deflection: float
     solutions: Tuple[wing.Solution, ...]
+
+
+@dataclass(frozen=True)
+class ProjectStructuralAnalysis:
+    """One project-aware aerodynamic load case and preliminary spar result."""
+
+    case: FlightCase
+    surface: str
+    load_factor: float
+    design_speed: float
+    alpha: float
+    lift_slope_per_degree: float
+    solution: wing.Solution
+    span_load: structural_loads.SpanLoad
+    sizing: Dict[str, float]
+    deflection: Dict[str, object]
+    cap_thickness: float
+    EI: float
 
 
 @dataclass(frozen=True)
@@ -583,6 +604,50 @@ def _surface_strip_profile(project, surface, solution, case):
     )
 
 
+def surface_section_cl_max(
+    project: AircraftProject,
+    surface: LiftingSurface,
+    solution: wing.Solution,
+    case: Optional[FlightCase] = None,
+) -> np.ndarray:
+    """Local section ``cl_max`` at every VLM strip's airfoil and Reynolds number."""
+    case = project.case() if case is None else case
+    view = solution.surface(surface.name)
+    ds_one = view.ds / (2.0 if surface.symmetric else 1.0)
+    strip_s = np.cumsum(ds_one) - 0.5 * ds_one
+    station_s = np.r_[0.0, np.cumsum(surface.path_lengths())]
+    interval = np.clip(
+        np.searchsorted(station_s, strip_s, side="right") - 1,
+        0,
+        len(surface.stations) - 2,
+    )
+    denom = np.maximum(station_s[interval + 1] - station_s[interval], 1e-12)
+    blend = (strip_s - station_s[interval]) / denom
+    cl_max = np.empty_like(view.cl)
+    options = dict(
+        n_crit=case.n_crit,
+        xtr_upper=case.xtr_upper,
+        xtr_lower=case.xtr_lower,
+    )
+    for station_index in np.unique(interval):
+        mask = interval == station_index
+        left = surface.stations[station_index]
+        right = surface.stations[station_index + 1]
+        re_range = (
+            max(1e4, 0.7 * float(np.min(view.Re[mask]))),
+            1.3 * float(np.max(view.Re[mask])),
+        )
+        left_table = airfoil.table(project.section(left.airfoil), Re=re_range, **options)
+        right_table = airfoil.table(project.section(right.airfoil), Re=re_range, **options)
+        left_weight = 1.0 - blend[mask]
+        right_weight = blend[mask]
+        cl_max[mask] = (
+            left_weight * left_table.cl_max(view.Re[mask])
+            + right_weight * right_table.cl_max(view.Re[mask])
+        )
+    return cl_max
+
+
 def _unloaded_surface_profile(project, surface, case):
     """Profile-drag row for a surface omitted from the longitudinal VLM, e.g. a fin."""
     air = atmos.at(case.altitude)
@@ -682,6 +747,83 @@ def aircraft_polar(
         CD_i=cdi, Cm=np.array([item.Cm for item in solutions]),
         LD=np.divide(cl, cd, out=np.full_like(cl, np.nan), where=cd > 0),
         trim_deflection=float(trim_deflection), solutions=solutions,
+    )
+
+
+def analyze_structure(
+    project: AircraftProject,
+    case: FlightCase,
+    *,
+    surface: str,
+    load_factor: float,
+    speed: float,
+    ns: int = 36,
+    nc: int = 4,
+    spar_height: float = 0.03,
+    allowable_stress: float = 300e6,
+    ultimate_factor: float = 1.5,
+    elastic_modulus: float = 70e9,
+    cap_width: float = 0.02,
+) -> ProjectStructuralAnalysis:
+    """Run one direct project load case through preliminary two-cap spar sizing."""
+    project.require_valid()
+    lifting_surface = project.surface_named(surface)
+    if lifting_surface is None or lifting_surface.orientation != "horizontal":
+        raise ValueError("choose a horizontal structural lifting surface")
+    if load_factor <= 0:
+        raise ValueError("structural design load factor must be positive")
+    if speed <= 0:
+        raise ValueError("structural design speed must be positive")
+    if cap_width <= 0:
+        raise ValueError("available cap width must be positive")
+    if elastic_modulus <= 0:
+        raise ValueError("cap elastic modulus must be positive")
+
+    mass_properties = stability.mass_properties(project.components())
+    mass = mass_properties.mass
+    reference_area = project.reference_quantities()[0]
+    load_case = replace(case, speed=float(speed), load_factor=float(load_factor))
+    zero = analyze(
+        project, load_case, alpha=0.0, trim_deflection=0.0,
+        ns=ns, nc=nc, x_ref=mass_properties.x_cg,
+    )
+    one = analyze(
+        project, load_case, alpha=1.0, trim_deflection=0.0,
+        ns=ns, nc=nc, x_ref=mass_properties.x_cg,
+    )
+    lift_slope_per_degree = one.CL - zero.CL
+    if abs(lift_slope_per_degree) < 1e-8:
+        raise ValueError("the lifting-surface model has essentially zero lift-curve slope")
+    target_cl = load_factor * mass * G0 / (zero.q * reference_area)
+    alpha = (target_cl - zero.CL) / lift_slope_per_degree
+    solution = analyze(
+        project, load_case, alpha=alpha, trim_deflection=0.0,
+        ns=ns, nc=nc, x_ref=mass_properties.x_cg,
+    )
+    span = structural_loads.span_load(
+        project.equivalent_aircraft(), mass=mass, n=load_factor, V=speed,
+        altitude=case.altitude, ns=ns, solution=solution, surface=surface,
+    )
+    sizing = structural_loads.spar_sizing(
+        abs(span.root_moment), height=spar_height,
+        sigma_allow=allowable_stress, safety_factor=ultimate_factor,
+    )
+    cap_thickness = sizing["cap_area"] / cap_width
+    cap_EI = elastic_modulus * sizing["cap_area"] * spar_height**2 / 2.0
+    deflection = structural_loads.tip_deflection(span, EI=cap_EI)
+    return ProjectStructuralAnalysis(
+        case=load_case,
+        surface=surface,
+        load_factor=float(load_factor),
+        design_speed=float(speed),
+        alpha=float(alpha),
+        lift_slope_per_degree=float(lift_slope_per_degree),
+        solution=solution,
+        span_load=span,
+        sizing=sizing,
+        deflection=deflection,
+        cap_thickness=float(cap_thickness),
+        EI=float(cap_EI),
     )
 
 

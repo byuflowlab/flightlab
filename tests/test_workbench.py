@@ -15,12 +15,14 @@ from flightlab.workbench import Workbench, _coerce_records
 
 def test_workbench_builds_and_runs_integrated_analysis():
     workbench = Workbench()
+    assert workbench.mass_table.selectable == "checkbox-single"
     view = workbench.view()
     workbench.run_integrated_analysis()
 
     assert view.title == "FlightLab Aircraft Workbench"
     assert workbench._last_result is not None
     assert workbench._last_result.trim.converged
+    assert workbench._last_stall["reached"]
     assert workbench.status.alert_type == "success"
     # Lift curve, drag polar, L/D, and Cm all show an explicit trim marker.
     for axis in workbench.analysis_plots.object.axes[:4]:
@@ -33,6 +35,7 @@ def test_workbench_builds_and_runs_integrated_analysis():
     assert "correlation / reference" in workbench.body_results.value.columns
     assert "calculated mass [kg]" in workbench.mass_results.value.columns
     assert "marker" in workbench.mass_results.value.columns
+    assert {"CL", "total CD"} <= set(workbench.analysis_results.value.columns)
     assert "M1000" in set(workbench.motor_table.value["key"])
     assert len(workbench.propulsor_table.value) == 1
     assert "Propulsion battery (B3S1300)" in set(workbench.mass_results.value["component"])
@@ -65,7 +68,43 @@ def test_workbench_builds_and_runs_integrated_analysis():
     outline_lines = len(workbench.geometry_plot.object.axes[1].lines)
     workbench.show_panel_mesh.value = True
     assert len(workbench.geometry_plot.object.axes[1].lines) > outline_lines
+    assert len(workbench.analysis_plots.object.axes) == 8
+
+    # Completed cases are restored from cache when the selector cycles back.
+    cruise_result = workbench._last_result
+    workbench.analysis_case.value = "Takeoff"
+    assert workbench._last_result is None
+    workbench.run_integrated_analysis()
+    assert workbench._last_result.case.name == "Takeoff"
+    workbench.analysis_case.value = "Cruise"
+    assert workbench._last_result is cruise_result
+    assert workbench.analysis_results.value.iloc[0]["case"] == "Cruise"
+    assert "cached" in workbench.status.object.lower()
+    workbench.project_filename.value = "my-analysis-copy"
+    assert workbench.project_download.filename == "my-analysis-copy.flightlab.json"
+    for widget_name in (
+        "project_filename", "surface_select", "reference_mode", "airfoil_re",
+        "analysis_case", "analysis_ns", "loads_mode", "loads_factor",
+        "battery_select", "propulsion_speed_points",
+    ):
+        assert getattr(workbench, widget_name).description
     plt.close("all")
+
+
+def test_mass_deletion_refreshes_every_derived_view():
+    workbench = Workbench()
+    workbench.show_mass_components.value = True
+    removed_name = workbench.mass_table.value.iloc[1]["name"]
+    workbench.mass_table.selection = [1]
+    workbench._delete_mass(None)
+
+    component_count = len(workbench.project.components())
+    assert len(workbench.project.masses) == 2
+    assert removed_name not in set(workbench.mass_results.value["component"])
+    assert len(workbench.mass_results.value) == component_count
+    # One collection per component plus the CG in both figures.
+    assert len(workbench.geometry_plot.object.axes[0].collections) == component_count + 1
+    assert len(workbench.mass_geometry_plot.object.axes[0].collections) == component_count + 1
 
 
 def test_workbench_exposes_project_loads_and_spar_sizing():
@@ -121,7 +160,7 @@ def test_workbench_exports_analysis_and_propulsion_sweeps_as_csv():
         "alpha_deg", "CL", "CD", "CD_profile_body", "CD_induced",
         "Cm_about_cg", "L_over_D", "trim_control_deg",
     } <= set(polar.columns)
-    assert len(polar) == 13
+    assert len(polar) == 21
     assert polar["project"].nunique() == 1
     assert np.isfinite(polar[["CL", "CD", "L_over_D"]].to_numpy()).all()
     assert not workbench.analysis_download.disabled
@@ -130,6 +169,7 @@ def test_workbench_exports_analysis_and_propulsion_sweeps_as_csv():
     assert {
         "project", "case", "surface", "mass_kg", "alpha_deg", "y_m",
         "strip_width_m", "chord_m", "section_cl", "span_loading_c_cl_m",
+        "section_cl_max", "section_cl_at_estimated_stall",
         "section_cm", "reynolds_number",
     } <= set(spanwise.columns)
     assert {"Main wing", "Horizontal tail"} <= set(spanwise["surface"])

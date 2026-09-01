@@ -6,7 +6,7 @@ is deliberately optional; importing the numerical package does not import it.
 
 from __future__ import annotations
 
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from html import escape
 import io
 import math
@@ -41,11 +41,13 @@ from .project_analysis import (
     TrimNotPossibleError,
     _grid_for_surface,
     analyze as analyze_project,
+    analyze_structure,
     aircraft_polar,
     analyze_dynamic_stability,
     analyze_propulsion,
     propulsion_derivatives,
     run_design_point,
+    surface_section_cl_max,
 )
 
 pn.extension("tabulator", notifications=True, sizing_mode="stretch_width")
@@ -182,14 +184,16 @@ def _safe_filename(name: str) -> str:
 
 
 def _table(frame, height=260, editors=None, configuration=None, header_tooltips=None):
+    tooltips = header_tooltips or {}
     return pn.widgets.Tabulator(
         frame,
         show_index=False,
-        selectable=1,
+        selectable="checkbox-single",
         height=height,
         editors=editors or {},
         configuration=configuration or {"layout": "fitColumns"},
-        header_tooltips=header_tooltips or {},
+        header_tooltips=tooltips,
+        titles={name: f"{name} ⓘ" for name in tooltips},
     )
 
 
@@ -204,6 +208,8 @@ class Workbench:
         self._last_airfoil_context = None
         self._last_result = None
         self._last_polar = None
+        self._last_stall = None
+        self._analysis_cache = {}
         self._last_loads_result = None
         self._last_propulsion_result = None
 
@@ -215,8 +221,11 @@ class Workbench:
         self.blank_button = pn.widgets.Button(label="New starter design", icon="file-plus")
         self.example_button = pn.widgets.Button(label="Load multi-panel example", icon="plane")
         self.project_upload = pn.widgets.FileInput(label="Open project", accept=".json,.flightlab")
+        self.project_filename = pn.widgets.TextInput(
+            label="Project file name", placeholder="aircraft.flightlab.json"
+        )
         self.project_download = pn.widgets.FileDownload(
-            label="Save project", icon="download", callback=self._download_project
+            label="Download project", icon="download", callback=self._download_project
         )
 
         self.surface_select = pn.widgets.Select(label="Lifting surface")
@@ -348,7 +357,8 @@ class Workbench:
             callback=self._download_spanwise_csv, disabled=True,
         )
         self.analysis_metrics = pn.pane.HTML()
-        self.analysis_plots = pn.pane.Matplotlib(height=650, tight=True, format="svg")
+        self.analysis_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=105)
+        self.analysis_plots = pn.pane.Matplotlib(height=1080, tight=True, format="svg")
         self.drag_table = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=260)
         self.analysis_warnings = pn.pane.Alert(alert_type="warning", visible=False)
 
@@ -493,28 +503,63 @@ class Workbench:
     def _set_widget_descriptions(self):
         """Attach concise hover help to the controls students meet most often."""
         descriptions = {
+            "project_name": "Aircraft/project name stored inside the project file.",
+            "project_notes": "Free-form assumptions, provenance, and design notes saved with the project.",
+            "project_upload": "Open a .json or .flightlab project from this computer.",
+            "project_filename": "Name used for the downloaded project file; your browser chooses the download location.",
+            "surface_select": "Choose the lifting surface edited by the controls and station table below.",
+            "surface_name": "Unique name used to attach masses and identify analysis results.",
             "reference_mode": "Choose how coefficient reference area, span, and chord are obtained.",
             "reference_surface": "Surface that supplies Sref, bref, and cref.",
+            "reference_surfaces": "Surfaces whose areas are summed for the aircraft coefficient reference.",
+            "reference_area": "Manual coefficient reference area Sref [m²].",
+            "reference_span": "Manual coefficient reference span bref [m].",
+            "reference_chord": "Manual coefficient reference chord cref [m].",
             "surface_orientation": "Horizontal surfaces enter longitudinal analysis; vertical surfaces enter directional models.",
             "surface_purpose": "Descriptive role; it does not change the solver.",
             "surface_trim_control": "Geometry the trim solver may deflect to balance pitching moment.",
             "surface_symmetric": "Reflect this stored half-surface across the aircraft centerline.",
             "surface_control_hinge": "Chord fraction measured aft from the leading edge.",
+            "surface_control_min": "Minimum incidence/elevator deflection available to the trim solver [deg].",
+            "surface_control_max": "Maximum incidence/elevator deflection available to the trim solver [deg].",
+            "airfoil_select": "Airfoil used by the standalone section analysis.",
+            "airfoil_upload": "Import a Selig-style airfoil coordinate file into this project.",
+            "naca_code": "Four digits such as 0009 or 2412; coordinates are generated analytically.",
             "airfoil_re": "Section Reynolds number for this standalone airfoil sweep.",
             "airfoil_transition": "Forced transition x/c; 1.0 applies no artificial trip and represents natural transition.",
+            "airfoil_alpha_min": "Lowest section angle of attack in the airfoil sweep [deg].",
+            "airfoil_alpha_max": "Highest section angle of attack in the airfoil sweep [deg].",
             "analysis_case": "Flight condition used for atmosphere, required lift, drag, and trim.",
             "analysis_ns": "Spanwise panels assigned to the reference-span surface; other horizontal surfaces scale with span, with at least eight.",
             "analysis_nc": "Chordwise panels used on every lifting surface in the VLM solve.",
+            "loads_case": "Flight case supplying atmosphere; direct mode also uses its speed when design speed is zero.",
+            "loads_surface": "Horizontal lifting surface whose span load and spar are evaluated.",
             "loads_mode": "Use a direct speed/load-factor case for RC sizing, or opt into a full maneuver/gust envelope.",
             "loads_ns": "Spanwise panels used for the structural surface's aerodynamic load distribution.",
             "loads_cl_max": "Positive stall boundary used to construct the maneuver envelope.",
             "loads_cl_min": "Negative stall boundary used to construct the maneuver envelope.",
+            "loads_n_pos": "Positive maneuver-envelope limit load factor.",
+            "loads_n_neg": "Negative maneuver-envelope limit load factor.",
+            "loads_v_max": "Envelope maximum speed; zero uses 1.4 times the selected case speed.",
             "loads_gust": "Sharp-edged vertical gust increment used for the gust lines [m/s].",
             "loads_design_speed": "Zero uses the selected flight-case speed in direct mode or the positive corner speed in envelope mode.",
             "loads_factor": "Positive limit load factor used to size the selected lifting surface and spar caps.",
+            "loads_spar_height": "Vertical separation between the tension and compression cap centroids [m].",
+            "loads_allowable": "Allowable normal stress used for each spar cap [MPa].",
+            "loads_ultimate_factor": "Multiplier from limit bending moment to ultimate sizing moment.",
+            "loads_modulus": "Elastic modulus used in the cap-only deflection estimate [GPa].",
+            "loads_cap_width": "Available width used to convert required cap area into thickness [m].",
+            "battery_select": "Shared battery definition feeding every propulsor row.",
             "include_propulsion_masses": "Add catalog battery, motor, ESC, and propeller masses at their entered locations.",
             "state_of_charge": "Fraction of usable battery charge remaining; affects open-circuit voltage.",
+            "battery_x": "Battery x location used for aircraft CG and inertia [m].",
+            "battery_y": "Battery y location used for aircraft CG and inertia [m].",
+            "battery_z": "Battery z location used for aircraft CG and inertia [m].",
+            "propulsion_speed_min": "Lowest speed in the thrust/drag sweep; zero with a zero maximum selects an automatic range.",
+            "propulsion_speed_max": "Highest speed in the thrust/drag sweep; zero with a zero minimum selects an automatic range.",
             "propulsion_speed_points": "Number of points in the propulsion/airframe speed sweep.",
+            "propeller_data_select": "Propeller whose measured coefficient rows are shown below.",
+            "propeller_data_upload": "Import measured rpm, J, CT, and CP coefficient rows.",
         }
         for name, description in descriptions.items():
             widget = getattr(self, name)
@@ -527,6 +572,7 @@ class Workbench:
         self.project_upload.param.watch(self._open_project, "value")
         self.project_name.param.watch(self._project_metadata_changed, "value")
         self.project_notes.param.watch(self._project_metadata_changed, "value")
+        self.project_filename.param.watch(self._project_filename_changed, "value")
 
         self.surface_select.param.watch(self._surface_selected, "value")
         self.surface_name.param.watch(self._surface_metadata_changed, "value")
@@ -610,9 +656,9 @@ class Workbench:
             self.airfoil_alpha_max, self.airfoil_transition,
         ):
             widget.param.watch(self._airfoil_inputs_changed, "value")
-        self.analysis_case.param.watch(self._analysis_inputs_changed, "value")
-        self.analysis_ns.param.watch(self._analysis_inputs_changed, "value")
-        self.analysis_nc.param.watch(self._analysis_inputs_changed, "value")
+        self.analysis_case.param.watch(self._analysis_case_changed, "value")
+        self.analysis_ns.param.watch(self._analysis_resolution_changed, "value")
+        self.analysis_nc.param.watch(self._analysis_resolution_changed, "value")
         self.show_mass_components.param.watch(lambda _: self._refresh_geometry(), "value")
         self.show_panel_mesh.param.watch(lambda _: self._refresh_geometry(), "value")
         self.loads_mode.param.watch(self._loads_mode_changed, "value")
@@ -636,6 +682,7 @@ class Workbench:
         self.project = project
         self.project_name.value = project.name
         self.project_notes.value = project.notes
+        self.project_filename.value = _safe_filename(project.name)
         names = [surface.name for surface in project.surfaces]
         self.surface_select.options = names
         self.surface_select.value = names[0] if names else None
@@ -665,7 +712,7 @@ class Workbench:
         except ValueError:
             structural_surface = horizontal_names[0] if horizontal_names else None
         self.loads_surface.value = structural_surface
-        self.project_download.filename = _safe_filename(project.name)
+        self.project_download.filename = self.project_filename.value
         self._refresh_airfoil_options()
         self._load_propulsion_library_tables()
         setup = project.propulsion or PropulsionSetup()
@@ -689,14 +736,45 @@ class Workbench:
         self._refresh_propulsion_options()
         self._refresh_component_summaries()
         self._refresh_generated_python()
-        self.project_download.filename = _safe_filename(self.project.name)
+        if not self.project_filename.value.strip():
+            self.project_filename.value = _safe_filename(self.project.name)
+        self._project_filename_changed(None)
         self.status.object = message
         self.status.alert_type = "light"
 
     def _analysis_inputs_changed(self, _):
         if self._updating:
             return
+        self._last_loads_result = None
+        self._last_propulsion_result = None
+        self.loads_download.disabled = True
+        self.propulsion_download.disabled = True
+        self._refresh_generated_python()
+
+    def _analysis_resolution_changed(self, _):
+        if self._updating:
+            return
         self._invalidate_export_results()
+        self._clear_analysis_display("Panel counts changed; rerun each flight case.")
+        self._refresh_generated_python()
+
+    def _analysis_case_changed(self, _):
+        if self._updating:
+            return
+        self._last_propulsion_result = None
+        self.propulsion_download.disabled = True
+        cached = self._analysis_cache.get(self.analysis_case.value)
+        if cached is None:
+            self._last_result = None
+            self._last_polar = None
+            self._last_stall = None
+            self.analysis_download.disabled = True
+            self.analysis_span_download.disabled = True
+            self._clear_analysis_display(
+                f"No cached analysis for {self.analysis_case.value}; run this case once."
+            )
+        else:
+            self._display_analysis_result(*cached, cached=True)
         self._refresh_generated_python()
 
     def _loads_mode_changed(self, _=None):
@@ -726,6 +804,16 @@ class Workbench:
         self.project.notes = self.project_notes.value
         self._refresh_all()
 
+    def _project_filename_changed(self, _):
+        if self._updating:
+            return
+        filename = self.project_filename.value.strip()
+        if not filename:
+            filename = _safe_filename(self.project.name)
+        if not filename.lower().endswith((".json", ".flightlab")):
+            filename += ".flightlab.json"
+        self.project_download.filename = filename
+
     def _download_project(self):
         return io.BytesIO((self.project.to_json() + "\n").encode("utf-8"))
 
@@ -736,6 +824,8 @@ class Workbench:
         self._last_airfoil_context = None
         self._last_result = None
         self._last_polar = None
+        self._last_stall = None
+        self._analysis_cache.clear()
         self._last_loads_result = None
         self._last_propulsion_result = None
         self.airfoil_download.disabled = True
@@ -800,6 +890,18 @@ class Workbench:
         frames = []
         for surface_name in solution.surfaces:
             view = solution.surface(surface_name)
+            surface = self.project.surface_named(surface_name)
+            section_limit = surface_section_cl_max(
+                self.project, surface, solution, result.case
+            )
+            stall_distribution = (
+                self._last_stall["distributions"].get(surface_name)
+                if self._last_stall is not None else None
+            )
+            stall_section_cl = (
+                stall_distribution["cl"]
+                if stall_distribution is not None else np.full_like(view.cl, np.nan)
+            )
             count = len(view.y)
             frames.append(pd.DataFrame({
                 "project": np.repeat(result.project_name, count),
@@ -811,6 +913,8 @@ class Workbench:
                 "strip_width_m": view.ds,
                 "chord_m": view.chord,
                 "section_cl": view.cl,
+                "section_cl_max": section_limit,
+                "section_cl_at_estimated_stall": stall_section_cl,
                 "span_loading_c_cl_m": view.ccl,
                 "section_cm": view.cm_section,
                 "reynolds_number": view.Re,
@@ -1073,21 +1177,24 @@ class Workbench:
         if self._updating:
             return
         try:
-            schema = [
-                ("name", str, False), ("mass", float, True), ("x", float, False),
-                ("y", float, False), ("z", float, False),
-                ("distributed", str, True), ("span", float, True),
-                ("attached_to", str, True), ("density", float, True),
-                ("skin_thickness", float, True),
-            ]
-            rows = _coerce_records(event.new, schema, "Mass")
-            for row in rows:
-                row["distributed"] = row["distributed"] or "point"
-                row["attached_to"] = row["attached_to"] or ""
-            self.project.masses = [MassItem(**row) for row in rows]
-            self._refresh_all("Mass model updated.")
+            self._apply_mass_frame(event.new)
         except Exception as exc:
             self._error(f"Mass edit is incomplete: {exc}")
+
+    def _apply_mass_frame(self, frame):
+        schema = [
+            ("name", str, False), ("mass", float, True), ("x", float, False),
+            ("y", float, False), ("z", float, False),
+            ("distributed", str, True), ("span", float, True),
+            ("attached_to", str, True), ("density", float, True),
+            ("skin_thickness", float, True),
+        ]
+        rows = _coerce_records(frame, schema, "Mass")
+        for row in rows:
+            row["distributed"] = row["distributed"] or "point"
+            row["attached_to"] = row["attached_to"] or ""
+        self.project.masses = [MassItem(**row) for row in rows]
+        self._refresh_all("Mass model updated.")
 
     def _cases_changed(self, event):
         if self._updating:
@@ -1136,7 +1243,19 @@ class Workbench:
         if not table.selection:
             self._error("Select one row to delete.")
             return
-        table.value = table.value.drop(table.value.index[table.selection[0]]).reset_index(drop=True)
+        frame = table.value.drop(table.value.index[table.selection[0]]).reset_index(drop=True)
+        if table is self.mass_table:
+            # Apply the new frame explicitly. Some browser/Tabulator versions
+            # coalesce the shorter DataFrame assignment and its value watcher,
+            # leaving derived tables and plots on the previous component list.
+            self._updating = True
+            table.value = frame
+            table.selection = []
+            self._updating = False
+            self._apply_mass_frame(frame)
+        else:
+            table.value = frame
+            table.selection = []
 
     def _add_body(self, _):
         self._append_table_row(self.body_table, asdict(BodyDefinition("new body", 0.5, diameter=0.08)))
@@ -1859,7 +1978,7 @@ class Workbench:
                 ("Izz", f"{mp.Izz:.4g} kg m²"), ("Ixz", f"{mp.Ixz:.4g} kg m²"),
             ])
             mass_models = {item.name: item.distributed or "point" for item in self.project.masses}
-            self.mass_results.value = pd.DataFrame([
+            mass_frame = pd.DataFrame([
                 {
                     "marker": f"M{index}",
                     "component": component.name,
@@ -1874,6 +1993,10 @@ class Workbench:
                 }
                 for index, component in enumerate(components, start=1)
             ])
+            # Clearing first forces Tabulator to remove stale browser-side rows
+            # when a component list becomes shorter.
+            self.mass_results.value = pd.DataFrame(columns=mass_frame.columns)
+            self.mass_results.value = mass_frame
             self._refresh_mass_geometry(components, mp)
         except Exception as exc:
             self.mass_summary.object = f"Mass result unavailable: {escape(str(exc))}"
@@ -1907,56 +2030,164 @@ class Workbench:
         except Exception as exc:
             self.body_results.value = pd.DataFrame([{"result": f"Unavailable: {exc}"}])
 
+    def _estimate_stall_from_polar(self, case, polar):
+        """Find where the first local section reaches its airfoil clmax."""
+        first = polar.solutions[0]
+        limits = {}
+        for name in first.surfaces:
+            surface = self.project.surface_named(name)
+            limits[name] = surface_section_cl_max(self.project, surface, first, case)
+        margins = np.array([
+            min(
+                float(np.min(limits[name] - solution.surface(name).cl))
+                for name in solution.surfaces
+            )
+            for solution in polar.solutions
+        ])
+        crossings = np.flatnonzero(margins <= 0.0)
+        reached = bool(len(crossings))
+        if reached:
+            upper = int(crossings[0])
+            lower = max(upper - 1, 0)
+            if upper == lower:
+                fraction = 0.0
+            else:
+                denominator = margins[lower] - margins[upper]
+                fraction = margins[lower] / denominator if denominator > 0 else 1.0
+        else:
+            lower = upper = len(polar.solutions) - 1
+            fraction = 0.0
+        alpha = float(polar.alpha[lower] + fraction * (polar.alpha[upper] - polar.alpha[lower]))
+        aircraft_cl = float(polar.CL[lower] + fraction * (polar.CL[upper] - polar.CL[lower]))
+        distributions = {}
+        critical = None
+        critical_margin = float("inf")
+        for name in first.surfaces:
+            low_view = polar.solutions[lower].surface(name)
+            high_view = polar.solutions[upper].surface(name)
+            local_cl = low_view.cl + fraction * (high_view.cl - low_view.cl)
+            local_margin = limits[name] - local_cl
+            index = int(np.argmin(local_margin))
+            if local_margin[index] < critical_margin:
+                critical_margin = float(local_margin[index])
+                critical = (name, index, float(low_view.y[index]))
+            distributions[name] = {
+                "y": low_view.y,
+                "cl": local_cl,
+                "cl_max": limits[name],
+            }
+        return {
+            "reached": reached,
+            "alpha": alpha,
+            "CL": aircraft_cl,
+            "margins": margins,
+            "alpha_samples": polar.alpha,
+            "distributions": distributions,
+            "critical": critical,
+        }
+
+    def _clear_analysis_display(self, message=""):
+        self.analysis_metrics.object = ""
+        self.analysis_results.value = pd.DataFrame()
+        self.drag_table.value = pd.DataFrame()
+        old = self.analysis_plots.object
+        self.analysis_plots.object = None
+        if old is not None:
+            plt.close(old)
+        self.analysis_warnings.object = message
+        self.analysis_warnings.alert_type = "light"
+        self.analysis_warnings.visible = bool(message)
+
+    def _display_analysis_result(self, result, polar, stall, cached=False):
+        self._last_result = result
+        self._last_polar = polar
+        self._last_stall = stall
+        stem = _safe_filename(self.project.name).removesuffix(".flightlab.json")
+        case_stem = _safe_filename(result.case.name).removesuffix(".flightlab.json")
+        self.analysis_download.filename = f"{stem}_{case_stem}_polar.csv"
+        self.analysis_download.disabled = False
+        self.analysis_span_download.filename = f"{stem}_{case_stem}_spanwise.csv"
+        self.analysis_span_download.disabled = False
+        trim = result.trim
+        stall_cl = f"{stall['CL']:.3f}" if stall["reached"] else f"> {stall['CL']:.3f}"
+        stall_alpha = f"{stall['alpha']:.2f}°" if stall["reached"] else f"> {stall['alpha']:.2f}°"
+        self.analysis_metrics.object = self._metric_cards([
+            ("Mass", f"{result.mass_properties.mass:.3f} kg"),
+            ("CG x", f"{trim.x_cg:.4f} m"),
+            ("Trim α", f"{trim.alpha:.3f}°"),
+            ("Trim CL", f"{trim.solution.CL:.4f}"),
+            ("Total CD", f"{result.CD_total:.4f}"),
+            ("Pitch-control deflection", f"{trim.trim_deflection:.3f}°"),
+            ("Static margin", f"{100 * trim.static_margin:.1f}% MAC"),
+            ("Span efficiency", f"{trim.solution.e_inv:.3f}"),
+            ("Profile + body CD", f"{result.buildup.CD_profile_body:.4f}"),
+            ("CDᵢ", f"{trim.solution.CD_i:.4f}"),
+            ("L/D", f"{result.lift_to_drag:.1f}"),
+            ("Estimated aircraft CLmax", stall_cl),
+            ("Estimated stall α", stall_alpha),
+            ("Best L/D in sweep", f"{np.nanmax(polar.LD):.1f}"),
+        ])
+        self.analysis_results.value = pd.DataFrame([{
+            "case": result.case.name,
+            "speed [m/s]": result.case.speed,
+            "trim alpha [deg]": trim.alpha,
+            "CL": trim.solution.CL,
+            "profile + body CD": result.buildup.CD_profile_body,
+            "induced CD": trim.solution.CD_i,
+            "total CD": result.CD_total,
+            "L/D": result.lift_to_drag,
+            "control [deg]": trim.trim_deflection,
+            "static margin": trim.static_margin,
+        }])
+        self._show_analysis_plots(result, polar, stall)
+        self.drag_table.value = pd.DataFrame([
+            {
+                "component": row.name,
+                "kind": row.kind,
+                "drag area [m²]": row.f,
+                "share [%]": 100 * row.f / result.buildup.f_components,
+            }
+            for row in result.buildup.rows
+        ])
+        warnings = list(result.warnings)
+        warnings.append(
+            "The CLmax estimate holds the trimmed pitch-control deflection fixed and combines linear VLM loading with NeuralFoil section limits; it does not model post-stall redistribution."
+        )
+        if not stall["reached"]:
+            warnings.append(
+                "No section reached its local clmax by the highest swept angle; the reported aircraft CLmax is a lower bound."
+            )
+        self.analysis_warnings.object = "\n".join(f"• {warning}" for warning in warnings)
+        self.analysis_warnings.alert_type = "warning"
+        self.analysis_warnings.visible = bool(warnings)
+        verb = "Loaded cached" if cached else "Completed"
+        self.status.object = f"{verb} integrated analysis for {result.case.name}."
+        self.status.alert_type = "success"
+
     def run_integrated_analysis(self, _=None):
         self.run_analysis_button.loading = True
-        self.status.object = "Running VLM, trim, stability, mass, and drag analyses…"
+        self.status.object = "Running VLM, trim, stability, stall, mass, and drag analyses…"
         self.status.alert_type = "primary"
+        case_name = self.analysis_case.value
         try:
-            case = self.project.case(self.analysis_case.value)
+            case = self.project.case(case_name)
             result = run_design_point(
                 self.project, case, ns=self.analysis_ns.value, nc=self.analysis_nc.value
             )
             polar = aircraft_polar(
-                self.project, case, alpha=np.linspace(-5.0, 14.0, 13),
+                self.project, case, alpha=np.linspace(-5.0, 20.0, 21),
                 trim_deflection=result.trim.trim_deflection,
                 ns=self.analysis_ns.value, nc=self.analysis_nc.value,
             )
-            self._last_result = result
-            self._last_polar = polar
-            stem = _safe_filename(self.project.name).removesuffix(".flightlab.json")
-            case_stem = _safe_filename(case.name).removesuffix(".flightlab.json")
-            self.analysis_download.filename = f"{stem}_{case_stem}_polar.csv"
-            self.analysis_download.disabled = False
-            self.analysis_span_download.filename = f"{stem}_{case_stem}_spanwise.csv"
-            self.analysis_span_download.disabled = False
-            trim = result.trim
-            self.analysis_metrics.object = self._metric_cards([
-                ("Mass", f"{result.mass_properties.mass:.3f} kg"),
-                ("CG x", f"{trim.x_cg:.4f} m"),
-                ("Trim α", f"{trim.alpha:.3f}°"),
-                ("Pitch-control deflection", f"{trim.trim_deflection:.3f}°"),
-                ("Static margin", f"{100 * trim.static_margin:.1f}% MAC"),
-                ("Span efficiency", f"{trim.solution.e_inv:.3f}"),
-                ("Profile + body CD", f"{result.buildup.CD_profile_body:.4f}"),
-                ("CDᵢ", f"{trim.solution.CD_i:.4f}"),
-                ("L/D", f"{result.lift_to_drag:.1f}"),
-                ("Best L/D in sweep", f"{np.nanmax(polar.LD):.1f}"),
-            ])
-            self._show_analysis_plots(result, polar)
-            self.drag_table.value = pd.DataFrame([
-                {"component": row.name, "kind": row.kind, "drag area [m²]": row.f, "share [%]": 100 * row.f / result.buildup.f_components}
-                for row in result.buildup.rows
-            ])
-            self.analysis_warnings.object = "\n".join(f"• {warning}" for warning in result.warnings)
-            self.analysis_warnings.alert_type = "warning"
-            self.analysis_warnings.visible = True
-            self.status.object = f"Completed integrated analysis for {case.name}."
-            self.status.alert_type = "success"
+            stall = self._estimate_stall_from_polar(case, polar)
+            self._analysis_cache[case.name] = (result, polar, stall)
+            self._display_analysis_result(result, polar, stall)
         except TrimNotPossibleError as exc:
-            self._last_result = None
-            self._last_polar = None
+            self._analysis_cache.pop(case_name, None)
+            self._last_result = self._last_polar = self._last_stall = None
             self.analysis_download.disabled = True
             self.analysis_span_download.disabled = True
+            self._clear_analysis_display()
             self.analysis_metrics.object = self._metric_cards([
                 ("Trim status", "Not possible within entered control limits"),
             ])
@@ -1966,25 +2197,27 @@ class Workbench:
             self.status.object = "The selected flight case cannot be trimmed with the entered control geometry and limits."
             self.status.alert_type = "danger"
         except Exception as exc:
-            self._last_result = None
-            self._last_polar = None
+            self._analysis_cache.pop(case_name, None)
+            self._last_result = self._last_polar = self._last_stall = None
             self.analysis_download.disabled = True
             self.analysis_span_download.disabled = True
-            self.analysis_metrics.object = ""
+            self._clear_analysis_display()
             self.analysis_warnings.object = f"{type(exc).__name__}: {exc}"
             self.analysis_warnings.alert_type = "danger"
             self.analysis_warnings.visible = True
-            self.status.object = "Analysis failed; the error is shown in the Results tab."
+            self.status.object = "Analysis failed; the error is shown in the Analysis tab."
             self.status.alert_type = "danger"
         finally:
             self.run_analysis_button.loading = False
 
-    def _show_analysis_plots(self, result, polar):
+    def _show_analysis_plots(self, result, polar, stall):
         solution = result.trim.solution
-        fig, axes = plt.subplots(3, 2, figsize=(10.5, 9.3))
+        fig, axes = plt.subplots(4, 2, figsize=(10.8, 13.0))
         ax = axes[0, 0]
         ax.plot(polar.alpha, polar.CL)
         ax.plot(result.trim.alpha, result.trim.solution.CL, "o", label="trim")
+        if stall["reached"]:
+            ax.plot(stall["alpha"], stall["CL"], "s", label="first section at $c_{l,max}$")
         ax.set(xlabel="angle of attack [deg]", ylabel="$C_L$", title="Aircraft lift curve")
         ax.legend(fontsize=8)
 
@@ -2008,19 +2241,49 @@ class Workbench:
         ax.legend(fontsize=8)
 
         ax = axes[2, 0]
-        for name in solution.surfaces:
-            view = solution.surface(name)
-            # Results live at cosine-spaced panel centers. Extend the first
-            # value to the symmetry plane so a line plot does not imply an
-            # uncomputed root discontinuity.
-            ax.plot(np.r_[0.0, view.y], np.r_[view.ccl[0], view.ccl], label=name)
+        primary = self.project.primary_horizontal_surface
+        if primary.name in solution.surfaces:
+            view = solution.surface(primary.name)
+        else:
+            primary = self.project.surface_named(solution.surfaces[0])
+            view = solution.surface(solution.surfaces[0])
+        eta = np.clip(2.0 * np.abs(view.y) / primary.span, 0.0, 1.0)
+        ellipse_shape = np.sqrt(np.clip(1.0 - eta**2, 0.0, None))
+        ellipse = ellipse_shape * (
+            np.sum(view.ccl * view.ds) / max(np.sum(ellipse_shape * view.ds), 1e-30)
+        )
+        ax.plot(np.r_[0.0, view.y], np.r_[view.ccl[0], view.ccl], label=f"{primary.name} actual")
+        ax.plot(np.r_[0.0, view.y], np.r_[ellipse[0], ellipse], "--", label="same-lift ellipse")
         ax.set(
             xlabel="semispan panel center [m]", ylabel="$c c_l$ [m]",
-            title="Semispan loading (root value extended to symmetry plane)",
+            title=f"{primary.name} loading versus same-lift ellipse",
         )
         ax.legend(fontsize=8)
 
         ax = axes[2, 1]
+        for name, distribution in stall["distributions"].items():
+            line = ax.plot(distribution["y"], distribution["cl"], label=f"{name} $c_l$")[0]
+            ax.plot(
+                distribution["y"], distribution["cl_max"], "--",
+                color=line.get_color(), label=f"{name} $c_{{l,max}}$",
+            )
+        title = "Section lift at first local stall" if stall["reached"] else "Section lift at highest swept angle"
+        ax.set(xlabel="semispan panel center [m]", ylabel="section coefficient", title=title)
+        ax.legend(fontsize=7, ncol=2)
+
+        ax = axes[3, 0]
+        ax.plot(stall["alpha_samples"], stall["margins"], marker="o", ms=3)
+        ax.axhline(0.0, color="0.35", lw=1)
+        if stall["reached"]:
+            ax.plot(stall["alpha"], 0.0, "s", label=f"CLmax ≈ {stall['CL']:.3f}")
+            ax.legend(fontsize=8)
+        ax.set(
+            xlabel="aircraft angle of attack [deg]",
+            ylabel="minimum $c_{l,max}-c_l$",
+            title="First-section stall margin",
+        )
+
+        ax = axes[3, 1]
         rows = result.buildup.rows
         ax.barh([row.name for row in rows], [row.f for row in rows], color="#356ea6")
         ax.invert_yaxis()
@@ -2078,57 +2341,28 @@ class Workbench:
                     "structural design speed must be positive and no greater than "
                     "the maneuver-envelope maximum speed"
                 )
-            load_case = replace(case, speed=design_speed, load_factor=design_n)
             ns = int(self.loads_ns.value)
             nc = min(int(self.analysis_nc.value), 6)
-
-            zero = analyze_project(
-                self.project, load_case, alpha=0.0, trim_deflection=0.0,
-                ns=ns, nc=nc, x_ref=mass_properties.x_cg,
+            structural = analyze_structure(
+                self.project, case, surface=surface.name,
+                load_factor=design_n, speed=design_speed, ns=ns, nc=nc,
+                spar_height=self.loads_spar_height.value,
+                allowable_stress=self.loads_allowable.value * 1e6,
+                ultimate_factor=self.loads_ultimate_factor.value,
+                elastic_modulus=self.loads_modulus.value * 1e9,
+                cap_width=self.loads_cap_width.value,
             )
-            one = analyze_project(
-                self.project, load_case, alpha=1.0, trim_deflection=0.0,
-                ns=ns, nc=nc, x_ref=mass_properties.x_cg,
-            )
-            lift_slope_per_degree = one.CL - zero.CL
-            if abs(lift_slope_per_degree) < 1e-8:
-                raise ValueError("the lifting-surface model has essentially zero lift-curve slope")
-            q = zero.q
-            target_cl = design_n * mass * loads.G0 / (q * S_ref)
-            alpha = (target_cl - zero.CL) / lift_slope_per_degree
-            solution = analyze_project(
-                self.project, load_case, alpha=alpha, trim_deflection=0.0,
-                ns=ns, nc=nc, x_ref=mass_properties.x_cg,
-            )
-            span = loads.span_load(
-                aircraft, mass=mass, n=design_n, V=design_speed,
-                altitude=case.altitude, ns=ns, solution=solution,
-                surface=surface.name,
-            )
-
-            sizing = loads.spar_sizing(
-                abs(span.root_moment),
-                height=self.loads_spar_height.value,
-                sigma_allow=self.loads_allowable.value * 1e6,
-                safety_factor=self.loads_ultimate_factor.value,
-            )
-            cap_width = float(self.loads_cap_width.value)
-            if cap_width <= 0:
-                raise ValueError("available cap width must be positive")
-            cap_thickness = sizing["cap_area"] / cap_width
-            elastic_modulus = self.loads_modulus.value * 1e9
-            if elastic_modulus <= 0:
-                raise ValueError("cap elastic modulus must be positive")
-            # Two equal caps of area A separated by h: I ≈ A h² / 2.
-            cap_EI = (
-                elastic_modulus * sizing["cap_area"]
-                * self.loads_spar_height.value**2 / 2.0
-            )
-            deflection = loads.tip_deflection(span, EI=cap_EI)
+            alpha = structural.alpha
+            solution = structural.solution
+            span = structural.span_load
+            sizing = structural.sizing
+            cap_thickness = structural.cap_thickness
+            cap_EI = structural.EI
+            deflection = structural.deflection
 
             if envelope_mode:
                 gust_speed = np.linspace(0.0, envelope["V_max"], 160)
-                lift_slope_per_radian = lift_slope_per_degree * 180.0 / np.pi
+                lift_slope_per_radian = structural.lift_slope_per_degree * 180.0 / np.pi
                 gust_positive = loads.gust_load_factor(
                     aircraft, gust_speed, gust=self.loads_gust.value, mass=mass,
                     CL_alpha=lift_slope_per_radian, altitude=case.altitude,
@@ -2410,17 +2644,17 @@ class Workbench:
             self.run_dynamics_button.loading = False
 
     def _refresh_generated_python(self):
-        filename = _safe_filename(self.project.name)
+        filename = self.project_filename.value.strip() or _safe_filename(self.project.name)
         case_name = self.analysis_case.value or (self.project.cases[0].name if self.project.cases else "Cruise")
         loads_v_max = None if self.loads_v_max.value <= 0 else float(self.loads_v_max.value)
         if self.loads_mode.value == "Maneuver/gust V–n envelope":
             load_case_setup = f'''# Optional maneuver/gust envelope.
 envelope = loads.vn_diagram(
-    project.equivalent_aircraft(), mass=mass_properties.mass,
+    project.equivalent_aircraft(), mass=result.mass_properties.mass,
     CL_max={self.loads_cl_max.value:.8g}, CL_min={self.loads_cl_min.value:.8g},
     altitude=case.altitude, n_pos={self.loads_n_pos.value:.8g},
     n_neg={self.loads_n_neg.value:.8g}, V_max={loads_v_max!r},
-    reference_area=S_ref,
+    reference_area=project.reference_quantities()[0],
 )
 design_speed = {self.loads_design_speed.value:.8g} or envelope["V_A"]'''
             envelope_print = 'print("corner speed [m/s] =", envelope["V_A"])'
@@ -2428,16 +2662,14 @@ design_speed = {self.loads_design_speed.value:.8g} or envelope["V_A"]'''
             load_case_setup = f'''# Direct RC structural case; no certification-style V-n envelope.
 design_speed = {self.loads_design_speed.value:.8g} or case.speed'''
             envelope_print = ""
-        code = f'''from dataclasses import replace
-
-import numpy as np
+        code = f'''import numpy as np
 import matplotlib.pyplot as plt
 
-from flightlab import loads, stability
+from flightlab import loads
 from flightlab.project import AircraftProject
 from flightlab.project_analysis import (
-    aircraft_polar, analyze as analyze_project, analyze_dynamic_stability,
-    analyze_propulsion, run_design_point,
+    aircraft_polar, analyze_dynamic_stability, analyze_propulsion,
+    analyze_structure, run_design_point,
 )
 
 project = AircraftProject.load({filename!r})
@@ -2463,44 +2695,23 @@ axes[1, 0].plot(polar.alpha, polar.LD)
 axes[1, 1].plot(polar.alpha, polar.Cm)
 plt.show()
 
-# Selected-surface span load and two-cap spar sizing.
-mass_properties = stability.mass_properties(project.components())
-S_ref, _, c_ref = project.reference_quantities()
+# Selected-surface span load and two-cap spar sizing through the same
+# project-level API used by the workbench.
 {load_case_setup}
-load_case = replace(
-    case, speed=design_speed, load_factor={self.loads_factor.value:.8g}
-)
-zero = analyze_project(project, load_case, alpha=0.0, trim_deflection=0.0,
-                       ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
-                       x_ref=mass_properties.x_cg)
-one = analyze_project(project, load_case, alpha=1.0, trim_deflection=0.0,
-                      ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
-                      x_ref=mass_properties.x_cg)
-target_cl = (load_case.load_factor * mass_properties.mass * 9.80665
-             / (zero.q * S_ref))
-alpha_load = (target_cl - zero.CL) / (one.CL - zero.CL)
-load_solution = analyze_project(
-    project, load_case, alpha=alpha_load, trim_deflection=0.0,
+structure = analyze_structure(
+    project, case, surface={self.loads_surface.value!r},
+    load_factor={self.loads_factor.value:.8g}, speed=design_speed,
     ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
-    x_ref=mass_properties.x_cg,
+    spar_height={self.loads_spar_height.value:.8g},
+    allowable_stress={self.loads_allowable.value:.8g}e6,
+    ultimate_factor={self.loads_ultimate_factor.value:.8g},
+    elastic_modulus={self.loads_modulus.value:.8g}e9,
+    cap_width={self.loads_cap_width.value:.8g},
 )
-span = loads.span_load(
-    project.equivalent_aircraft(), mass=mass_properties.mass,
-    n=load_case.load_factor, V=load_case.speed, altitude=load_case.altitude,
-    solution=load_solution, surface={self.loads_surface.value!r},
-)
-spar = loads.spar_sizing(
-    abs(span.root_moment), height={self.loads_spar_height.value:.8g},
-    sigma_allow={self.loads_allowable.value:.8g}e6,
-    safety_factor={self.loads_ultimate_factor.value:.8g},
-)
-cap_EI = ({self.loads_modulus.value:.8g}e9 * spar["cap_area"]
-          * {self.loads_spar_height.value:.8g}**2 / 2.0)
-beam = loads.tip_deflection(span, EI=cap_EI)
 {envelope_print}
-print("root moment [N m] =", span.root_moment)
-print("required area of each cap [m^2] =", spar["cap_area"])
-print("cap-only tip deflection [m] =", beam["tip_deflection"])
+print("root moment [N m] =", structure.span_load.root_moment)
+print("required area of each cap [m^2] =", structure.sizing["cap_area"])
+print("cap-only tip deflection [m] =", structure.deflection["tip_deflection"])
 
 # Electric chain and thrust available versus airframe drag required.
 power = analyze_propulsion(project, case)
@@ -2606,8 +2817,11 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             "reference span; each other horizontal surface is scaled by its span and receives at "
             "least eight panels. The chordwise count applies to every lifting surface. Bodies are "
             "not panelled: they use the empirical drag correlations shown in the component table. "
-            "Span-loading values are reported at panel centers, and a symmetric wing normally has "
-            "its largest loading near the root.",
+            "Span-loading values are reported at panel centers. Results are cached by flight-case name "
+            "until geometry or panel counts change, so revisiting a completed case restores its tables "
+            "and plots. The primary-wing ellipse carries the same integrated lift as that wing—not the "
+            "whole multi-surface aircraft. Aircraft CLmax is estimated where the first local section cl "
+            "touches its airfoil clmax at the strip Reynolds number.",
             alert_type="light",
         )
         loads_help = pn.pane.Alert(
@@ -2752,6 +2966,7 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             )),
             ("Analysis", pn.Column(
                 analysis_help, analysis_controls, self.analysis_metrics, self.analysis_warnings,
+                "### Selected-case coefficients", self.analysis_results,
                 self.analysis_plots, "### Component drag table", self.drag_table,
             )),
             ("Loads & structures", pn.Column(
@@ -2783,7 +2998,11 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             self.project_notes,
             pn.Column(self.blank_button, self.example_button),
             self.project_upload,
+            self.project_filename,
             self.project_download,
+            pn.pane.Markdown(
+                "The file name is controlled here; the download folder or Save As dialog is controlled by your browser settings."
+            ),
             self.status,
             pn.layout.Divider(),
             pn.pane.Markdown(

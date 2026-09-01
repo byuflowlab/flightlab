@@ -12,7 +12,9 @@ from flightlab.project_analysis import (
     analyze,
     analyze_dynamic_stability,
     analyze_propulsion,
+    analyze_structure,
     run_design_point,
+    surface_section_cl_max,
     trim,
 )
 from flightlab.propulsion import PropellerModel
@@ -85,6 +87,23 @@ def test_aircraft_polar_exposes_lift_drag_ld_and_pitching_moment():
     assert polar.Cm.shape == (3,)
     assert polar.CL[2] > polar.CL[0]
     assert (polar.CD >= polar.CD_profile).all()
+
+
+def test_project_section_limits_and_structural_case_use_station_geometry():
+    project = example_project()
+    solution = analyze(project, alpha=3.0, ns=16, nc=3)
+    main_wing = project.surface_named("Main wing")
+    local_limit = surface_section_cl_max(project, main_wing, solution, project.case())
+    assert local_limit.shape == solution.surface("Main wing").cl.shape
+    assert (local_limit > solution.surface("Main wing").cl).all()
+
+    structure = analyze_structure(
+        project, project.case(), surface="Main wing", load_factor=3.8,
+        speed=project.case().speed, ns=16, nc=3,
+    )
+    assert structure.span_load.root_moment > 0
+    assert structure.sizing["cap_area"] > 0
+    assert structure.deflection["tip_deflection"] > 0
 
 
 def test_propulsion_and_dynamic_stability_are_project_analyses():
