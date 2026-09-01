@@ -26,12 +26,16 @@ def test_example_project_is_valid_and_multi_station():
 def test_project_json_round_trip_preserves_nested_design():
     original = example_project()
     original.airfoils["custom"] = AirfoilDefinition.from_section(foil.naca4("4412"))
+    original.structure.surface = "Main wing"
+    original.structure.spar_height = 0.027
+    original.structure.allowable_stress = 420e6
 
     restored = AircraftProject.from_json(original.to_json())
 
     assert restored.to_dict() == original.to_dict()
     assert restored.reference_surface.stations[2].airfoil == "sd7037"
     assert restored.propulsion.propulsors[0].motor == original.propulsion.propulsors[0].motor
+    assert restored.structure == original.structure
     assert restored.section("custom").thickness == pytest.approx(
         original.section("custom").thickness
     )

@@ -1,6 +1,7 @@
 """Integrated multi-station project analyses."""
 
 from copy import deepcopy
+from dataclasses import replace
 
 import pytest
 
@@ -91,16 +92,17 @@ def test_aircraft_polar_exposes_lift_drag_ld_and_pitching_moment():
 
 def test_project_section_limits_and_structural_case_use_station_geometry():
     project = example_project()
+    project.structure.surface = "Main wing"
+    project.structure.spar_height = 0.025
     solution = analyze(project, alpha=3.0, ns=16, nc=3)
     main_wing = project.surface_named("Main wing")
     local_limit = surface_section_cl_max(project, main_wing, solution, project.case())
     assert local_limit.shape == solution.surface("Main wing").cl.shape
     assert (local_limit > solution.surface("Main wing").cl).all()
 
-    structure = analyze_structure(
-        project, project.case(), surface="Main wing", load_factor=3.8,
-        speed=project.case().speed, ns=16, nc=3,
-    )
+    structural_case = replace(project.case(), load_factor=3.8)
+    structure = analyze_structure(project, structural_case, ns=16, nc=3)
+    assert structure.surface == project.structure.surface
     assert structure.span_load.root_moment > 0
     assert structure.sizing["cap_area"] > 0
     assert structure.deflection["tip_deflection"] > 0

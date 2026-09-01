@@ -35,7 +35,8 @@ def test_workbench_builds_and_runs_integrated_analysis():
     assert "correlation / reference" in workbench.body_results.value.columns
     assert "calculated mass [kg]" in workbench.mass_results.value.columns
     assert "marker" in workbench.mass_results.value.columns
-    assert {"CL", "total CD"} <= set(workbench.analysis_results.value.columns)
+    assert "Trim CL" in workbench.analysis_metrics.object
+    assert "Total CD" in workbench.analysis_metrics.object
     assert "M1000" in set(workbench.motor_table.value["key"])
     assert len(workbench.propulsor_table.value) == 1
     assert "Propulsion battery (B3S1300)" in set(workbench.mass_results.value["component"])
@@ -68,7 +69,10 @@ def test_workbench_builds_and_runs_integrated_analysis():
     outline_lines = len(workbench.geometry_plot.object.axes[1].lines)
     workbench.show_panel_mesh.value = True
     assert len(workbench.geometry_plot.object.axes[1].lines) > outline_lines
-    assert len(workbench.analysis_plots.object.axes) == 8
+    assert len(workbench.analysis_plots.object.axes) == 6
+    loading_axis = workbench.analysis_plots.object.axes[4]
+    loading_labels = {line.get_label() for line in loading_axis.lines}
+    assert {"Main wing actual", "Horizontal tail actual"} <= loading_labels
 
     # Completed cases are restored from cache when the selector cycles back.
     cruise_result = workbench._last_result
@@ -78,8 +82,11 @@ def test_workbench_builds_and_runs_integrated_analysis():
     assert workbench._last_result.case.name == "Takeoff"
     workbench.analysis_case.value = "Cruise"
     assert workbench._last_result is cruise_result
-    assert workbench.analysis_results.value.iloc[0]["case"] == "Cruise"
     assert "cached" in workbench.status.object.lower()
+    workbench.analysis_ns.value += 2
+    assert workbench._analysis_cache == {}
+    assert workbench._last_result is None
+    assert "deleted" in workbench.analysis_warnings.object.lower()
     workbench.project_filename.value = "my-analysis-copy"
     assert workbench.project_download.filename == "my-analysis-copy.flightlab.json"
     for widget_name in (
@@ -110,6 +117,12 @@ def test_mass_deletion_refreshes_every_derived_view():
 def test_workbench_exposes_project_loads_and_spar_sizing():
     workbench = Workbench()
     view = workbench.view()
+    workbench.loads_spar_height.value = 0.027
+    workbench.loads_allowable.value = 420.0
+    assert workbench.project.structure.spar_height == pytest.approx(0.027)
+    assert workbench.project.structure.allowable_stress == pytest.approx(420e6)
+    restored = type(workbench.project).from_json(workbench.project.to_json())
+    assert restored.structure == workbench.project.structure
     workbench.run_loads_analysis()
 
     assert "Loads & structures" in view.main[0]._names
@@ -134,6 +147,8 @@ def test_workbench_exposes_project_loads_and_spar_sizing():
     assert workbench.loads_mode.value == "Direct RC design case"
     assert not workbench.loads_cl_max.visible
     assert "required area of each cap" in workbench.python_output.object
+    assert "project.structure" in workbench.python_output.object
+    assert "spar_height=" not in workbench.python_output.object
     generated = workbench.python_output.object.split("```python\n", 1)[1].rsplit("```", 1)[0]
     compile(generated, "generated_flightlab_analysis.py", "exec")
     plt.close("all")
@@ -178,6 +193,9 @@ def test_workbench_exports_analysis_and_propulsion_sweeps_as_csv():
     workbench.propulsion_speed_min.value = 6.0
     workbench.propulsion_speed_max.value = 35.0
     workbench.propulsion_speed_points.value = 30
+    assert "speed=propulsion_speed" in workbench.python_output.object
+    assert "np.linspace(6, 35, 30)" in workbench.python_output.object
+    assert "analyze_dynamic_stability(\n    project, case, ns=28, nc=4" in workbench.python_output.object
     workbench.run_propulsion_analysis()
     sweep = pd.read_csv(workbench._download_propulsion_csv())
     assert {

@@ -357,8 +357,7 @@ class Workbench:
             callback=self._download_spanwise_csv, disabled=True,
         )
         self.analysis_metrics = pn.pane.HTML()
-        self.analysis_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=105)
-        self.analysis_plots = pn.pane.Matplotlib(height=1080, tight=True, format="svg")
+        self.analysis_plots = pn.pane.Matplotlib(height=820, tight=True, format="svg")
         self.drag_table = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=260)
         self.analysis_warnings = pn.pane.Alert(alert_type="warning", visible=False)
 
@@ -663,14 +662,17 @@ class Workbench:
         self.show_panel_mesh.param.watch(lambda _: self._refresh_geometry(), "value")
         self.loads_mode.param.watch(self._loads_mode_changed, "value")
         for widget in (
-            self.loads_case, self.loads_surface,
+            self.loads_case,
             self.loads_cl_max, self.loads_cl_min,
             self.loads_n_pos, self.loads_n_neg, self.loads_v_max, self.loads_gust,
-            self.loads_factor, self.loads_design_speed, self.loads_ns, self.loads_spar_height,
-            self.loads_allowable, self.loads_ultimate_factor, self.loads_modulus,
-            self.loads_cap_width,
+            self.loads_factor, self.loads_design_speed, self.loads_ns,
         ):
             widget.param.watch(self._analysis_inputs_changed, "value")
+        for widget in (
+            self.loads_surface, self.loads_spar_height, self.loads_allowable,
+            self.loads_ultimate_factor, self.loads_modulus, self.loads_cap_width,
+        ):
+            widget.param.watch(self._structure_changed, "value")
         for widget in (
             self.propulsion_speed_min, self.propulsion_speed_max,
             self.propulsion_speed_points,
@@ -708,10 +710,21 @@ class Workbench:
         horizontal_names = [surface.name for surface in project.horizontal_surfaces]
         self.loads_surface.options = horizontal_names
         try:
-            structural_surface = project.primary_horizontal_surface.name
+            default_structural_surface = project.primary_horizontal_surface.name
         except ValueError:
-            structural_surface = horizontal_names[0] if horizontal_names else None
+            default_structural_surface = horizontal_names[0] if horizontal_names else None
+        structural_surface = (
+            project.structure.surface
+            if project.structure.surface in horizontal_names
+            else default_structural_surface
+        )
+        project.structure.surface = structural_surface or ""
         self.loads_surface.value = structural_surface
+        self.loads_spar_height.value = project.structure.spar_height
+        self.loads_allowable.value = project.structure.allowable_stress / 1e6
+        self.loads_ultimate_factor.value = project.structure.ultimate_factor
+        self.loads_modulus.value = project.structure.elastic_modulus / 1e9
+        self.loads_cap_width.value = project.structure.cap_width
         self.project_download.filename = self.project_filename.value
         self._refresh_airfoil_options()
         self._load_propulsion_library_tables()
@@ -729,7 +742,7 @@ class Workbench:
         self._refresh_all("Project loaded.")
 
     def _refresh_all(self, message="Project updated."):
-        self._invalidate_export_results()
+        deleted_cached_cases = self._invalidate_export_results()
         self._refresh_validation()
         self._refresh_geometry()
         self._refresh_attachment_options()
@@ -739,6 +752,8 @@ class Workbench:
         if not self.project_filename.value.strip():
             self.project_filename.value = _safe_filename(self.project.name)
         self._project_filename_changed(None)
+        if deleted_cached_cases:
+            message += " All cached flight-case results were deleted."
         self.status.object = message
         self.status.alert_type = "light"
 
@@ -751,11 +766,29 @@ class Workbench:
         self.propulsion_download.disabled = True
         self._refresh_generated_python()
 
+    def _structure_changed(self, _):
+        """Persist physical spar/material choices with the aircraft project."""
+        if self._updating:
+            return
+        setup = self.project.structure
+        setup.surface = self.loads_surface.value or ""
+        setup.spar_height = float(self.loads_spar_height.value)
+        setup.allowable_stress = float(self.loads_allowable.value) * 1e6
+        setup.ultimate_factor = float(self.loads_ultimate_factor.value)
+        setup.elastic_modulus = float(self.loads_modulus.value) * 1e9
+        setup.cap_width = float(self.loads_cap_width.value)
+        self._last_loads_result = None
+        self.loads_download.disabled = True
+        self._refresh_generated_python()
+
     def _analysis_resolution_changed(self, _):
         if self._updating:
             return
         self._invalidate_export_results()
-        self._clear_analysis_display("Panel counts changed; rerun each flight case.")
+        self._clear_analysis_display(
+            "Panel counts changed; all cached flight-case results were deleted. "
+            "Rerun each case you want to compare."
+        )
         self._refresh_generated_python()
 
     def _analysis_case_changed(self, _):
@@ -819,6 +852,7 @@ class Workbench:
 
     def _invalidate_export_results(self):
         """Prevent downloads from silently describing an earlier project state."""
+        deleted_cached_cases = bool(self._analysis_cache)
         self._last_airfoil_result = None
         self._last_airfoil_alpha = None
         self._last_airfoil_context = None
@@ -833,6 +867,7 @@ class Workbench:
         self.analysis_span_download.disabled = True
         self.loads_download.disabled = True
         self.propulsion_download.disabled = True
+        return deleted_cached_cases
 
     def _download_airfoil_csv(self):
         """Export the most recent airfoil sweep with model diagnostics."""
@@ -2088,7 +2123,6 @@ class Workbench:
 
     def _clear_analysis_display(self, message=""):
         self.analysis_metrics.object = ""
-        self.analysis_results.value = pd.DataFrame()
         self.drag_table.value = pd.DataFrame()
         old = self.analysis_plots.object
         self.analysis_plots.object = None
@@ -2127,18 +2161,6 @@ class Workbench:
             ("Estimated stall α", stall_alpha),
             ("Best L/D in sweep", f"{np.nanmax(polar.LD):.1f}"),
         ])
-        self.analysis_results.value = pd.DataFrame([{
-            "case": result.case.name,
-            "speed [m/s]": result.case.speed,
-            "trim alpha [deg]": trim.alpha,
-            "CL": trim.solution.CL,
-            "profile + body CD": result.buildup.CD_profile_body,
-            "induced CD": trim.solution.CD_i,
-            "total CD": result.CD_total,
-            "L/D": result.lift_to_drag,
-            "control [deg]": trim.trim_deflection,
-            "static margin": trim.static_margin,
-        }])
         self._show_analysis_plots(result, polar, stall)
         self.drag_table.value = pd.DataFrame([
             {
@@ -2212,7 +2234,7 @@ class Workbench:
 
     def _show_analysis_plots(self, result, polar, stall):
         solution = result.trim.solution
-        fig, axes = plt.subplots(4, 2, figsize=(10.8, 13.0))
+        fig, axes = plt.subplots(3, 2, figsize=(10.8, 10.0))
         ax = axes[0, 0]
         ax.plot(polar.alpha, polar.CL)
         ax.plot(result.trim.alpha, result.trim.solution.CL, "o", label="trim")
@@ -2241,24 +2263,30 @@ class Workbench:
         ax.legend(fontsize=8)
 
         ax = axes[2, 0]
-        primary = self.project.primary_horizontal_surface
-        if primary.name in solution.surfaces:
-            view = solution.surface(primary.name)
-        else:
-            primary = self.project.surface_named(solution.surfaces[0])
-            view = solution.surface(solution.surfaces[0])
-        eta = np.clip(2.0 * np.abs(view.y) / primary.span, 0.0, 1.0)
-        ellipse_shape = np.sqrt(np.clip(1.0 - eta**2, 0.0, None))
-        ellipse = ellipse_shape * (
-            np.sum(view.ccl * view.ds) / max(np.sum(ellipse_shape * view.ds), 1e-30)
-        )
-        ax.plot(np.r_[0.0, view.y], np.r_[view.ccl[0], view.ccl], label=f"{primary.name} actual")
-        ax.plot(np.r_[0.0, view.y], np.r_[ellipse[0], ellipse], "--", label="same-lift ellipse")
+        for surface in self.project.horizontal_surfaces:
+            if surface.name not in solution.surfaces:
+                continue
+            view = solution.surface(surface.name)
+            line = ax.plot(
+                np.r_[0.0, view.y], np.r_[view.ccl[0], view.ccl],
+                label=f"{surface.name} actual",
+            )[0]
+            if surface.purpose == "wing":
+                eta = np.clip(2.0 * np.abs(view.y) / surface.span, 0.0, 1.0)
+                ellipse_shape = np.sqrt(np.clip(1.0 - eta**2, 0.0, None))
+                denominator = np.sum(ellipse_shape * view.ds)
+                ellipse = ellipse_shape * (
+                    np.sum(view.ccl * view.ds) / max(abs(denominator), 1e-30)
+                )
+                ax.plot(
+                    np.r_[0.0, view.y], np.r_[ellipse[0], ellipse], "--",
+                    color=line.get_color(), label=f"{surface.name} same-lift ellipse",
+                )
         ax.set(
             xlabel="semispan panel center [m]", ylabel="$c c_l$ [m]",
-            title=f"{primary.name} loading versus same-lift ellipse",
+            title="All-surface loading; per-wing same-lift ellipses",
         )
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=7, ncol=2)
 
         ax = axes[2, 1]
         for name, distribution in stall["distributions"].items():
@@ -2271,23 +2299,6 @@ class Workbench:
         ax.set(xlabel="semispan panel center [m]", ylabel="section coefficient", title=title)
         ax.legend(fontsize=7, ncol=2)
 
-        ax = axes[3, 0]
-        ax.plot(stall["alpha_samples"], stall["margins"], marker="o", ms=3)
-        ax.axhline(0.0, color="0.35", lw=1)
-        if stall["reached"]:
-            ax.plot(stall["alpha"], 0.0, "s", label=f"CLmax ≈ {stall['CL']:.3f}")
-            ax.legend(fontsize=8)
-        ax.set(
-            xlabel="aircraft angle of attack [deg]",
-            ylabel="minimum $c_{l,max}-c_l$",
-            title="First-section stall margin",
-        )
-
-        ax = axes[3, 1]
-        rows = result.buildup.rows
-        ax.barh([row.name for row in rows], [row.f for row in rows], color="#356ea6")
-        ax.invert_yaxis()
-        ax.set(xlabel="drag area [m²]", title="Parasite-drag buildup")
         for axis in axes.ravel():
             axis.grid(alpha=0.22)
         fig.suptitle(f"{result.project_name} — {result.case.name}")
@@ -2344,13 +2355,8 @@ class Workbench:
             ns = int(self.loads_ns.value)
             nc = min(int(self.analysis_nc.value), 6)
             structural = analyze_structure(
-                self.project, case, surface=surface.name,
-                load_factor=design_n, speed=design_speed, ns=ns, nc=nc,
-                spar_height=self.loads_spar_height.value,
-                allowable_stress=self.loads_allowable.value * 1e6,
-                ultimate_factor=self.loads_ultimate_factor.value,
-                elastic_modulus=self.loads_modulus.value * 1e9,
-                cap_width=self.loads_cap_width.value,
+                self.project, case, load_factor=design_n, speed=design_speed,
+                ns=ns, nc=nc,
             )
             alpha = structural.alpha
             solution = structural.solution
@@ -2662,6 +2668,19 @@ design_speed = {self.loads_design_speed.value:.8g} or envelope["V_A"]'''
             load_case_setup = f'''# Direct RC structural case; no certification-style V-n envelope.
 design_speed = {self.loads_design_speed.value:.8g} or case.speed'''
             envelope_print = ""
+        propulsion_min = float(self.propulsion_speed_min.value)
+        propulsion_max = float(self.propulsion_speed_max.value)
+        propulsion_points = int(self.propulsion_speed_points.value)
+        if propulsion_min == 0.0 and propulsion_max == 0.0:
+            propulsion_speed = (
+                f"np.linspace(max(1.0, 0.45 * case.speed), "
+                f"1.8 * case.speed, {propulsion_points})"
+            )
+        else:
+            propulsion_speed = (
+                f"np.linspace({propulsion_min:.8g}, {propulsion_max:.8g}, "
+                f"{propulsion_points})"
+            )
         code = f'''import numpy as np
 import matplotlib.pyplot as plt
 
@@ -2685,7 +2704,7 @@ print("L/D =", result.lift_to_drag)
 
 # Whole-aircraft aerodynamics: full station geometry for CL, CDi, and Cm;
 # local NeuralFoil cd(cl, Re) integrated over every surface strip, plus bodies.
-polar = aircraft_polar(project, case, alpha=np.linspace(-5, 14, 20),
+polar = aircraft_polar(project, case, alpha=np.linspace(-5, 20, 21),
                        trim_deflection=result.trim.trim_deflection,
                        ns={self.analysis_ns.value}, nc={self.analysis_nc.value})
 fig, axes = plt.subplots(2, 2)
@@ -2695,30 +2714,29 @@ axes[1, 0].plot(polar.alpha, polar.LD)
 axes[1, 1].plot(polar.alpha, polar.Cm)
 plt.show()
 
-# Selected-surface span load and two-cap spar sizing through the same
-# project-level API used by the workbench.
+# Spar surface, cap geometry, and material properties are saved in
+# project.structure. The call below exposes the load case and numerical mesh.
 {load_case_setup}
 structure = analyze_structure(
-    project, case, surface={self.loads_surface.value!r},
-    load_factor={self.loads_factor.value:.8g}, speed=design_speed,
-    ns={self.loads_ns.value}, nc={min(self.analysis_nc.value, 6)},
-    spar_height={self.loads_spar_height.value:.8g},
-    allowable_stress={self.loads_allowable.value:.8g}e6,
-    ultimate_factor={self.loads_ultimate_factor.value:.8g},
-    elastic_modulus={self.loads_modulus.value:.8g}e9,
-    cap_width={self.loads_cap_width.value:.8g},
+    project, case, load_factor={self.loads_factor.value:.8g},
+    speed=design_speed, ns={self.loads_ns.value},
+    nc={min(self.analysis_nc.value, 6)},
 )
 {envelope_print}
 print("root moment [N m] =", structure.span_load.root_moment)
 print("required area of each cap [m^2] =", structure.sizing["cap_area"])
 print("cap-only tip deflection [m] =", structure.deflection["tip_deflection"])
 
-# Electric chain and thrust available versus airframe drag required.
-power = analyze_propulsion(project, case)
+# Electric hardware and throttle are saved in project.propulsion; the requested
+# speed sweep remains explicit.
+propulsion_speed = {propulsion_speed}
+power = analyze_propulsion(project, case, speed=propulsion_speed)
 print(power.operating_point.table())
 
-# Linear longitudinal and lateral modes (currently equivalent surfaces).
-dynamics = analyze_dynamic_stability(project, case)
+# Linear longitudinal and lateral modes at the explicit numerical resolution.
+dynamics = analyze_dynamic_stability(
+    project, case, ns={min(self.analysis_ns.value, 28)}, nc={self.analysis_nc.value}
+)
 print(dynamics.longitudinal.table())
 print(dynamics.lateral.table())
 print(dynamics.derivatives.table())
@@ -2726,7 +2744,8 @@ print("empirical body increments =", dynamics.body_increments)
 print("propulsion derivatives =", dynamics.propulsion_increments)
 '''
         self.python_output.object = (
-            "Save the project beside your script or notebook, then use the same model directly:\n\n"
+            "Save the project beside your script or notebook, then use the same model directly. "
+            "Physical configuration is read from the project; each call keeps the analysis request explicit.\n\n"
             f"```python\n{code}```"
         )
 
@@ -2817,10 +2836,11 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             "reference span; each other horizontal surface is scaled by its span and receives at "
             "least eight panels. The chordwise count applies to every lifting surface. Bodies are "
             "not panelled: they use the empirical drag correlations shown in the component table. "
-            "Span-loading values are reported at panel centers. Results are cached by flight-case name "
-            "until geometry or panel counts change, so revisiting a completed case restores its tables "
-            "and plots. The primary-wing ellipse carries the same integrated lift as that wing—not the "
-            "whole multi-surface aircraft. Aircraft CLmax is estimated where the first local section cl "
+            "Span-loading values are reported at panel centers. Results are cached by flight-case name. "
+            "Any geometry or panel-count edit deletes every cached case, so stale results cannot be "
+            "revisited. Every horizontal surface is plotted; each surface whose purpose is ‘wing’ also "
+            "gets its own same-lift ellipse. For a biplane these are separate diagnostics, not a single "
+            "whole-aircraft optimum. Aircraft CLmax is estimated where the first local section cl "
             "touches its airfoil clmax at the strip Reynolds number.",
             alert_type="light",
         )
@@ -2830,7 +2850,7 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             "case and does not require a certification-style V–n diagram. The optional envelope mode adds maneuver and "
             "sharp-edged-gust context; in that mode, a zero design speed selects the positive corner. In direct mode, "
             "zero selects the flight-case speed. Choose which horizontal surface carries the spar being sized. Material "
-            "allowable, modulus, cap spacing, and cap width are design inputs—not values inferred from geometry. "
+            "allowable, modulus, cap spacing, and cap width are saved aircraft-design inputs—not values inferred from geometry. "
             "The reported cap area is required for each of two equal caps.",
             alert_type="light",
         )
@@ -2966,7 +2986,6 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             )),
             ("Analysis", pn.Column(
                 analysis_help, analysis_controls, self.analysis_metrics, self.analysis_warnings,
-                "### Selected-case coefficients", self.analysis_results,
                 self.analysis_plots, "### Component drag table", self.drag_table,
             )),
             ("Loads & structures", pn.Column(

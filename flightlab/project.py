@@ -36,6 +36,7 @@ __all__ = [
     "PropellerPoint",
     "PropellerDefinition",
     "PropulsionSetup",
+    "StructuralSetup",
     "ProjectIssue",
     "AircraftProject",
     "blank_project",
@@ -267,6 +268,23 @@ class PropulsionSetup:
 
 
 @dataclass
+class StructuralSetup:
+    """Saved physical definition of the preliminary two-cap spar model.
+
+    Flight condition, load factor, and numerical panel counts belong to an
+    analysis request.  The selected structural surface, material properties,
+    and spar geometry describe the aircraft and therefore travel with it.
+    """
+
+    surface: str = ""
+    spar_height: float = 0.03
+    allowable_stress: float = 300e6
+    ultimate_factor: float = 1.5
+    elastic_modulus: float = 70e9
+    cap_width: float = 0.02
+
+
+@dataclass
 class PropellerPoint:
     """One measured propeller coefficient point.
 
@@ -353,6 +371,7 @@ class AircraftProject:
     cases: List[FlightCase] = field(default_factory=list)
     airfoils: Dict[str, AirfoilDefinition] = field(default_factory=dict)
     propulsion: Optional[PropulsionSetup] = field(default_factory=PropulsionSetup)
+    structure: StructuralSetup = field(default_factory=StructuralSetup)
     motors: Dict[str, catalog.Motor] = field(default_factory=_starter_motors)
     batteries: Dict[str, catalog.Battery] = field(default_factory=_starter_batteries)
     escs: Dict[str, catalog.ESC] = field(default_factory=_starter_escs)
@@ -685,6 +704,22 @@ class AircraftProject:
                 except Exception as exc:
                     issues.append(ProjectIssue("error", f"{surface.name}: airfoil {station.airfoil!r}: {exc}"))
 
+        if self.structure.surface:
+            structural_surface = self.surface_named(self.structure.surface)
+            if structural_surface is None or structural_surface.orientation != "horizontal":
+                issues.append(ProjectIssue(
+                    "error", "the saved structural surface must be an existing horizontal surface"
+                ))
+        for label, value in (
+            ("spar-cap centroid spacing", self.structure.spar_height),
+            ("cap allowable stress", self.structure.allowable_stress),
+            ("limit-to-ultimate factor", self.structure.ultimate_factor),
+            ("cap elastic modulus", self.structure.elastic_modulus),
+            ("available cap width", self.structure.cap_width),
+        ):
+            if value <= 0:
+                issues.append(ProjectIssue("error", f"structural {label} must be positive"))
+
         for body in self.bodies:
             if body.length <= 0 or body.count < 1:
                 issues.append(ProjectIssue("error", f"{body.name}: length and count must be positive"))
@@ -902,6 +937,7 @@ class AircraftProject:
                 })
                 if data.get("propulsion") is not None else None
             ),
+            structure=StructuralSetup(**data.get("structure", {})),
             motors={key: catalog.Motor(**value) for key, value in data.get("motors", {}).items()},
             batteries={key: catalog.Battery(**value) for key, value in data.get("batteries", {}).items()},
             escs={key: catalog.ESC(**value) for key, value in data.get("escs", {}).items()},

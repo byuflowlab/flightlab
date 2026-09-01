@@ -752,20 +752,42 @@ def aircraft_polar(
 
 def analyze_structure(
     project: AircraftProject,
-    case: FlightCase,
+    case: Optional[FlightCase] = None,
     *,
-    surface: str,
-    load_factor: float,
-    speed: float,
+    surface: Optional[str] = None,
+    load_factor: Optional[float] = None,
+    speed: Optional[float] = None,
     ns: int = 36,
     nc: int = 4,
-    spar_height: float = 0.03,
-    allowable_stress: float = 300e6,
-    ultimate_factor: float = 1.5,
-    elastic_modulus: float = 70e9,
-    cap_width: float = 0.02,
+    spar_height: Optional[float] = None,
+    allowable_stress: Optional[float] = None,
+    ultimate_factor: Optional[float] = None,
+    elastic_modulus: Optional[float] = None,
+    cap_width: Optional[float] = None,
 ) -> ProjectStructuralAnalysis:
-    """Run one direct project load case through preliminary two-cap spar sizing."""
+    """Run one direct load case through the project's saved two-cap spar model.
+
+    ``case``, ``load_factor``, ``speed``, ``ns``, and ``nc`` state the analysis
+    request.  The structural surface, material properties, and spar geometry
+    default to :attr:`AircraftProject.structure`; keyword overrides remain for
+    scripted design studies and backward compatibility.
+    """
+    case = project.case() if case is None else case
+    setup = project.structure
+    surface = surface or setup.surface or project.primary_horizontal_surface.name
+    load_factor = case.load_factor if load_factor is None else float(load_factor)
+    speed = case.speed if speed is None else float(speed)
+    spar_height = setup.spar_height if spar_height is None else float(spar_height)
+    allowable_stress = (
+        setup.allowable_stress if allowable_stress is None else float(allowable_stress)
+    )
+    ultimate_factor = (
+        setup.ultimate_factor if ultimate_factor is None else float(ultimate_factor)
+    )
+    elastic_modulus = (
+        setup.elastic_modulus if elastic_modulus is None else float(elastic_modulus)
+    )
+    cap_width = setup.cap_width if cap_width is None else float(cap_width)
     project.require_valid()
     lifting_surface = project.surface_named(surface)
     if lifting_surface is None or lifting_surface.orientation != "horizontal":

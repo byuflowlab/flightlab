@@ -111,9 +111,10 @@ It opens locally in a browser. No FlightLab server or account is involved. A pro
 The **Analysis** tab runs mass and CG, full-station VLM, longitudinal trim, lifting-surface
 neutral point, and component profile/body drag as one design point. It also plots the aircraft
 lift curve, drag polar, lift-to-drag ratio, pitching moment, and span loading. Completed flight
-cases are cached until the project or panel resolution changes. The selected-case table reports
-CL and total CD explicitly. The primary wing is compared with an ellipse carrying that wing's
-same integrated lift; a separate stall view compares each strip's local section cl with the
+cases are cached until the project or panel resolution changes, which deletes the cached cases.
+The summary metrics report CL and total CD explicitly. Every horizontal surface's loading is
+shown; each surface marked as a wing is compared with an ellipse carrying that surface's same
+integrated lift. A separate stall view compares each strip's local section cl with the
 airfoil clmax at its local Reynolds number and estimates the aircraft CL/angle where the first
 strip reaches its limit. The VLM retains
 every surface station. Lifting-surface profile drag integrates each strip's local chord,
@@ -137,6 +138,8 @@ The **Loads & structures** tab defaults to a direct RC design case specified by 
 and load factor. A maneuver/gust V–n envelope remains an optional mode. Both modes use the
 current project mass and geometry for a selected surface's VLM span load, shear and bending
 moment, preliminary two-cap spar sizing, and a cap-only beam-deflection estimate.
+The structural surface, cap geometry, and material properties are saved in the project JSON;
+speed, load factor, and panel resolution remain explicit analysis inputs.
 The generated Python uses the same project-level `analyze_structure` entry point as the
 workbench, keeping the structures example at the same abstraction level as aerodynamics,
 propulsion, and dynamic stability.
