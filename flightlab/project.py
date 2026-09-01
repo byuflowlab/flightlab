@@ -215,7 +215,13 @@ class MassItem:
 
 @dataclass
 class FlightCase:
-    """One named operating condition and its early-design drag assumptions."""
+    """One named operating condition and its early-design drag assumptions.
+
+    ``alpha_deg`` is the initial angle-of-attack guess for integrated trim; the
+    trim solver adjusts it to satisfy the required lift and zero pitching
+    moment. ``xtr_upper=xtr_lower=1`` imposes no artificial boundary-layer trip
+    and is presented as natural transition in the workbench.
+    """
 
     name: str
     speed: float

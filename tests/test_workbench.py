@@ -32,11 +32,39 @@ def test_workbench_builds_and_runs_integrated_analysis():
     assert workbench.reference_mode.value == "surface"
     assert "correlation / reference" in workbench.body_results.value.columns
     assert "calculated mass [kg]" in workbench.mass_results.value.columns
+    assert "marker" in workbench.mass_results.value.columns
     assert "M1000" in set(workbench.motor_table.value["key"])
     assert len(workbench.propulsor_table.value) == 1
     assert "Propulsion battery (B3S1300)" in set(workbench.mass_results.value["component"])
-    # Mass markers plus the propulsor point/thrust vector are drawn with the geometry.
-    assert len(workbench.geometry_plot.object.axes[0].collections) >= 3
+    # CG is always visible; individual mass markers are an optional uncluttering overlay.
+    assert len(workbench.geometry_plot.object.axes[0].collections) == 1
+    workbench.show_mass_components.value = True
+    assert len(workbench.geometry_plot.object.axes[0].collections) > 1
+    # The aircraft plot now has 3D, planform, side, and front views.
+    assert len(workbench.geometry_plot.object.axes) == 4
+    # Surface editing has its own selected-surface preview, without mass markers.
+    assert workbench.surface_geometry_plot.object is not workbench.geometry_plot.object
+    assert not workbench.surface_geometry_plot.object.axes[0].collections
+    workbench.surface_select.value = "Vertical tail"
+    vertical_side = workbench.surface_geometry_plot.object.axes[2]
+    assert any(np.ptp(line.get_ydata()) > 0.1 for line in vertical_side.lines)
+    # The Mass tab always has a labelled plan/side location view.
+    assert len(workbench.mass_geometry_plot.object.axes) == 2
+    assert workbench.mass_geometry_plot.object.axes[0].collections
+    assert "naca0009" in workbench.airfoil_select.options
+    assert "point" in workbench.mass_table.editors["distributed"]["values"]
+    assert set(workbench.case_table.value["transition"]) == {"natural"}
+    propeller_line = next(
+        line for line in workbench.geometry_plot.object.axes[1].lines
+        if line.get_label() == "propeller disk"
+    )
+    expected_diameter = workbench.project.propeller(
+        workbench.project.propulsion.propulsors[0]
+    ).model().diameter
+    assert np.ptp(propeller_line.get_ydata()) == pytest.approx(expected_diameter)
+    outline_lines = len(workbench.geometry_plot.object.axes[1].lines)
+    workbench.show_panel_mesh.value = True
+    assert len(workbench.geometry_plot.object.axes[1].lines) > outline_lines
     plt.close("all")
 
 
@@ -49,6 +77,8 @@ def test_workbench_exposes_project_loads_and_spar_sizing():
     assert workbench.status.alert_type == "success"
     result = workbench._last_loads_result
     assert result is not None
+    assert result["mode"] == "direct"
+    assert result["envelope"] is None
     assert result["surface"] == "Main wing"
     assert result["span_load"].root_moment > 0
     assert result["sizing"]["cap_area"] > 0
@@ -62,6 +92,8 @@ def test_workbench_exposes_project_loads_and_spar_sizing():
     assert len(span_load) == len(result["span_load"].y)
     assert not workbench.loads_download.disabled
     assert len(workbench.loads_plots.object.axes) >= 4
+    assert workbench.loads_mode.value == "Direct RC design case"
+    assert not workbench.loads_cl_max.visible
     assert "required area of each cap" in workbench.python_output.object
     generated = workbench.python_output.object.split("```python\n", 1)[1].rsplit("```", 1)[0]
     compile(generated, "generated_flightlab_analysis.py", "exec")
@@ -145,3 +177,25 @@ def test_table_coercion_accepts_numeric_strings_and_names_the_bad_field():
             [("name", str, False), ("chord", float, False)],
             "Station",
         )
+
+
+def test_workbench_naca_generation_and_natural_transition_controls():
+    workbench = Workbench()
+    workbench.naca_code.value = "4415"
+    workbench._add_naca_section(None)
+    assert workbench.airfoil_select.value == "naca4415"
+    assert "naca4415" in workbench.station_table.editors["airfoil"]["values"]
+
+    frame = workbench.case_table.value.copy()
+    frame.loc[0, ["transition", "xtr_upper", "xtr_lower"]] = ["forced", 0.4, 0.5]
+    workbench.case_table.value = frame
+    assert workbench.project.cases[0].xtr_upper == pytest.approx(0.4)
+    assert workbench.project.cases[0].xtr_lower == pytest.approx(0.5)
+
+    frame = workbench.case_table.value.copy()
+    frame.loc[0, "transition"] = "natural"
+    workbench.case_table.value = frame
+    assert workbench.project.cases[0].xtr_upper == pytest.approx(1.0)
+    assert workbench.project.cases[0].xtr_lower == pytest.approx(1.0)
+    assert workbench.case_table.value.loc[0, "xtr_upper"] == pytest.approx(1.0)
+    plt.close("all")

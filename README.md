@@ -114,14 +114,23 @@ every surface station. Lifting-surface profile drag integrates each strip's loca
 Reynolds number, lift coefficient, and interpolated station airfoils; bodies use documented
 empirical correlations. Separate **Propulsion** and **Dynamic stability** tabs expose the
 electric-chain match, efficiency and power curves, and longitudinal/lateral eigenmodes.
+The aircraft view marks CG independently of optional numbered mass-component markers, shows
+3D/planform/side/front views, draws each propeller at its specified disk diameter, and can
+overlay the lifting-surface panel mesh used by the current discretization controls. Table
+headers and the principal analysis controls provide hover help. Four-digit NACA sections can
+be generated directly in the Airfoils tab; NACA 0009 is included in the initial selectors.
+The Lifting surfaces tab has a mass-free, selected-surface panel preview (including vertical
+tails), while the Mass tab has dedicated planform and side views keyed to the numbered mass
+rows and CG marker.
 Airfoil curves, the Analysis polar and spanwise solution, the Propulsion speed sweep, and the
 Loads span-load/deflection solution can be downloaded as unit-labeled CSV files for
 calculations and plots beyond the workbench. Propulsion sweep limits and point count are
 editable, so a characteristic speed or thrust/drag crossing need not depend on the selected
 flight case's default plotting range.
-The **Loads & structures** tab uses the current project mass and geometry for maneuver/gust
-envelopes, a selected surface's VLM span load, shear and bending moment, preliminary two-cap
-spar sizing, and a cap-only beam-deflection estimate.
+The **Loads & structures** tab defaults to a direct RC design case specified by flight speed
+and load factor. A maneuver/gust V–n envelope remains an optional mode. Both modes use the
+current project mass and geometry for a selected surface's VLM span load, shear and bending
+moment, preliminary two-cap spar sizing, and a cap-only beam-deflection estimate.
 Dynamic lifting-surface derivatives currently use the equivalent-surface adapter, augmented
 with empirical slender-body/crossflow derivatives and fixed-throttle propulsion derivatives;
 those limitations are shown next to the results.

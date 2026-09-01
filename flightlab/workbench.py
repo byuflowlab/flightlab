@@ -15,6 +15,7 @@ import re
 from typing import Optional
 
 import matplotlib.pyplot as plt
+from matplotlib.patches import Ellipse
 import numpy as np
 import pandas as pd
 import panel as pn
@@ -38,6 +39,7 @@ from .project import (
 )
 from .project_analysis import (
     TrimNotPossibleError,
+    _grid_for_surface,
     analyze as analyze_project,
     aircraft_polar,
     analyze_dynamic_stability,
@@ -55,6 +57,40 @@ REFERENCE_MODES = ["surface", "selected_surfaces", "manual"]
 DRAG_MODELS = [
     "streamlined_body", "bluff_round_member", "faired_member", "streamlined_strut",
 ]
+
+STATION_TOOLTIPS = {
+    "x_le": "Leading-edge x coordinate; positive x is aft [m].",
+    "y": "Station y coordinate; positive y is to the aircraft's right [m].",
+    "z": "Station z coordinate; positive z is up [m].",
+    "chord": "Local section chord [m].",
+    "twist_deg": "Local geometric incidence; positive rotates the nose up [deg].",
+    "airfoil": "Bundled, generated NACA four-digit, or imported project airfoil.",
+}
+MASS_TOOLTIPS = {
+    "mass": "Known total component mass [kg]; leave blank only for a density-derived model.",
+    "x": "Point location or reference location for a distributed item [m aft].",
+    "y": "Point location or reference location [m right].",
+    "z": "Point location or reference location [m up].",
+    "distributed": "How this mass is placed for CG and inertia; point is a concentrated mass.",
+    "span": "Full span of a span-distributed known mass [m].",
+    "attached_to": "Surface or body whose geometry distributes this mass.",
+    "density": "Material density used when mass is blank [kg/m³].",
+    "skin_thickness": "Shell/skin thickness used by surface_area [m].",
+}
+CASE_TOOLTIPS = {
+    "speed": "True airspeed for this operating condition [m/s].",
+    "altitude": "Geometric altitude for the atmosphere model [m].",
+    "load_factor": "Required lift divided by weight; 1.0 is steady level flight.",
+    "alpha_deg": "Initial angle-of-attack guess [deg]. Integrated trim solves for alpha; this is not the answer.",
+    "interference": "Fractional drag-area markup for component interference; 0.05 means +5%.",
+    "protuberance": "Fractional drag-area markup for exposed hardware and excrescences; 0.10 means +10%.",
+    "f_other": "Additional dimensional drag area not represented by a component [m²].",
+    "cooling": "Cooling-flow drag coefficient on aircraft reference area.",
+    "transition": "Natural leaves transition free; forced uses the entered upper/lower x/c locations.",
+    "n_crit": "Boundary-layer disturbance level for the airfoil model; 9 is smooth, low-turbulence flow.",
+    "xtr_upper": "Forced upper-surface transition location x/c; 1.0 means no forced trip.",
+    "xtr_lower": "Forced lower-surface transition location x/c; 1.0 means no forced trip.",
+}
 
 
 def _records(frame: pd.DataFrame):
@@ -107,12 +143,45 @@ def _set_axes_equal_3d(ax):
     ax.set_box_aspect((1, 1, 1))
 
 
+def _display_grid_for_surface(surface: LiftingSurface, ns: int, nc: int) -> np.ndarray:
+    """Build a body-axis panel grid for a lifting-surface preview."""
+    stations = surface.stations
+    if len(stations) < 2:
+        raise ValueError("a panel preview needs at least two stations")
+    distances = np.concatenate(([0.0], np.cumsum(surface.path_lengths())))
+    if distances[-1] <= 0.0:
+        raise ValueError("surface stations must span a nonzero distance")
+    eta = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, ns + 1)))
+    locations = eta * distances[-1]
+
+    def interpolate(attribute):
+        return np.interp(
+            locations, distances, [getattr(item, attribute) for item in stations]
+        )
+
+    x_le = interpolate("x_le")[:, None]
+    y_le = interpolate("y")[:, None]
+    z_le = interpolate("z")[:, None]
+    chord = interpolate("chord")[:, None]
+    twist = np.radians(interpolate("twist_deg"))[:, None]
+    chord_fraction = np.linspace(0.0, 1.0, nc + 1)[None, :]
+    chordwise = chord * chord_fraction
+    x = x_le + chordwise * np.cos(twist)
+    if surface.orientation == "vertical":
+        y = y_le + chordwise * np.sin(twist)
+        z = np.broadcast_to(z_le, x.shape).copy()
+    else:
+        y = np.broadcast_to(y_le, x.shape).copy()
+        z = z_le - chordwise * np.sin(twist)
+    return np.stack((x, y, z))
+
+
 def _safe_filename(name: str) -> str:
     stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip()).strip("_").lower()
     return (stem or "aircraft") + ".flightlab.json"
 
 
-def _table(frame, height=260, editors=None, configuration=None):
+def _table(frame, height=260, editors=None, configuration=None, header_tooltips=None):
     return pn.widgets.Tabulator(
         frame,
         show_index=False,
@@ -120,6 +189,7 @@ def _table(frame, height=260, editors=None, configuration=None):
         height=height,
         editors=editors or {},
         configuration=configuration or {"layout": "fitColumns"},
+        header_tooltips=header_tooltips or {},
     )
 
 
@@ -175,6 +245,7 @@ class Workbench:
         self.station_table = _table(
             pd.DataFrame(), height=285,
             editors={name: {"type": "number"} for name in ("x_le", "y", "z", "chord", "twist_deg")},
+            header_tooltips=STATION_TOOLTIPS,
         )
         self.add_station_button = pn.widgets.Button(label="Add station", icon="plus")
         self.delete_station_button = pn.widgets.Button(label="Delete selected", icon="trash")
@@ -194,32 +265,48 @@ class Workbench:
             pd.DataFrame(), height=275,
             editors={
                 **{name: {"type": "number"} for name in ("mass", "x", "y", "z", "span", "density", "skin_thickness")},
-                "distributed": {"type": "list", "values": ["", "span", "surface_area", "surface_volume", "body_volume"]},
-            }, configuration={"layout": "fitDataTable"},
+                "distributed": {"type": "list", "values": ["point", "span", "surface_area", "surface_volume", "body_volume"]},
+            }, configuration={"layout": "fitDataTable"}, header_tooltips=MASS_TOOLTIPS,
         )
         self.add_mass_button = pn.widgets.Button(label="Add mass item", icon="plus")
         self.delete_mass_button = pn.widgets.Button(label="Delete selected", icon="trash")
         self.case_table = _table(
             pd.DataFrame(), height=285,
-            editors={name: {"type": "number"} for name in (
-                "speed", "altitude", "load_factor", "alpha_deg", "interference",
-                "protuberance", "f_other", "cooling",
-                "n_crit", "xtr_upper", "xtr_lower",
-            )}, configuration={"layout": "fitDataTable"},
+            editors={
+                **{name: {"type": "number"} for name in (
+                    "speed", "altitude", "load_factor", "alpha_deg", "interference",
+                    "protuberance", "f_other", "cooling",
+                    "n_crit", "xtr_upper", "xtr_lower",
+                )},
+                "transition": {"type": "list", "values": ["natural", "forced"]},
+            }, configuration={"layout": "fitDataTable"}, header_tooltips=CASE_TOOLTIPS,
         )
         self.add_case_button = pn.widgets.Button(label="Add flight case", icon="plus")
         self.delete_case_button = pn.widgets.Button(label="Delete selected", icon="trash")
 
-        self.geometry_plot = pn.pane.Matplotlib(height=500, tight=True, format="svg")
-        self.surface_geometry_plot = pn.pane.Matplotlib(height=420, tight=True, format="svg")
+        self.geometry_plot = pn.pane.Matplotlib(height=760, tight=True, format="svg")
+        self.surface_geometry_plot = pn.pane.Matplotlib(height=650, tight=True, format="svg")
+        self.show_mass_components = pn.widgets.Checkbox(
+            label="Show mass components (CG is always shown)", value=False,
+        )
+        self.show_panel_mesh = pn.widgets.Checkbox(
+            label="Show lifting-surface panels", value=False,
+        )
+        self.mass_marker_legend = pn.pane.HTML(visible=False)
         self.geometry_summary = pn.pane.HTML()
         self.surface_summary_table = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=210)
         self.body_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=230)
         self.mass_summary = pn.pane.HTML()
         self.mass_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=240)
+        self.mass_geometry_plot = pn.pane.Matplotlib(height=400, tight=True, format="svg")
 
         self.airfoil_select = pn.widgets.Select(label="Airfoil")
         self.airfoil_upload = pn.widgets.FileInput(label="Import .dat", accept=".dat")
+        self.naca_code = pn.widgets.TextInput(
+            label="Add NACA four-digit section", placeholder="0009", width=220,
+            description="Enter four digits, such as 0009 or 2412. Coordinates are generated analytically.",
+        )
+        self.add_naca_button = pn.widgets.Button(label="Add NACA section", icon="plus")
         self.airfoil_re = pn.widgets.FloatInput(label="Reynolds number", value=5e5, step=5e4)
         self.airfoil_alpha_min = pn.widgets.FloatInput(label="Minimum α [deg]", value=-6.0)
         self.airfoil_alpha_max = pn.widgets.FloatInput(label="Maximum α [deg]", value=16.0)
@@ -247,7 +334,7 @@ class Workbench:
         self.airfoil_diagnostics = pn.pane.Alert(alert_type="light")
 
         self.analysis_case = pn.widgets.Select(label="Flight case")
-        self.analysis_ns = pn.widgets.IntInput(label="Wing spanwise panels", value=28, start=12, end=100)
+        self.analysis_ns = pn.widgets.IntInput(label="Reference-span panels", value=28, start=12, end=100)
         self.analysis_nc = pn.widgets.IntInput(label="Chordwise panels", value=4, start=2, end=12)
         self.run_analysis_button = pn.widgets.Button(
             label="Run integrated design point", color="primary", icon="player-play"
@@ -267,6 +354,11 @@ class Workbench:
 
         self.loads_case = pn.widgets.Select(label="Flight case atmosphere")
         self.loads_surface = pn.widgets.Select(label="Structural lifting surface")
+        self.loads_mode = pn.widgets.Select(
+            label="Load-case method",
+            options=["Direct RC design case", "Maneuver/gust V–n envelope"],
+            value="Direct RC design case",
+        )
         self.loads_cl_max = pn.widgets.FloatInput(
             label="Maximum lift coefficient CLmax", value=1.4, start=0.1, step=0.05
         )
@@ -289,7 +381,7 @@ class Workbench:
             label="Structural design load factor", value=3.8, start=0.1, step=0.1
         )
         self.loads_design_speed = pn.widgets.FloatInput(
-            label="Structural design speed [m/s] (0 = positive corner)",
+            label="Structural design speed [m/s] (0 = flight-case speed)",
             value=0.0, start=0.0, step=1.0,
         )
         self.loads_ns = pn.widgets.IntInput(
@@ -330,7 +422,7 @@ class Workbench:
             label="Include battery and propulsor hardware in mass properties", value=True
         )
         self.propulsor_table = _table(
-            pd.DataFrame(), height=260,
+            pd.DataFrame(), height=150,
             editors={
                 "motor": {"type": "list", "values": sorted(catalog.MOTORS)},
                 "propeller": {"type": "list", "values": sorted(catalog.PROPELLERS)},
@@ -342,10 +434,10 @@ class Workbench:
         )
         self.add_propulsor_button = pn.widgets.Button(label="Add propulsor", icon="plus")
         self.delete_propulsor_button = pn.widgets.Button(label="Delete selected propulsor", icon="trash")
-        self.motor_table = _table(pd.DataFrame(), height=250, configuration={"layout": "fitDataTable"})
-        self.battery_table = _table(pd.DataFrame(), height=250, configuration={"layout": "fitDataTable"})
-        self.esc_table = _table(pd.DataFrame(), height=210, configuration={"layout": "fitDataTable"})
-        self.propeller_table = _table(pd.DataFrame(), height=230, configuration={"layout": "fitDataTable"})
+        self.motor_table = _table(pd.DataFrame(), height=205, configuration={"layout": "fitDataTable"})
+        self.battery_table = _table(pd.DataFrame(), height=175, configuration={"layout": "fitDataTable"})
+        self.esc_table = _table(pd.DataFrame(), height=145, configuration={"layout": "fitDataTable"})
+        self.propeller_table = _table(pd.DataFrame(), height=220, configuration={"layout": "fitDataTable"})
         self.propeller_data_select = pn.widgets.Select(label="Propeller coefficient dataset")
         self.propeller_data_table = _table(
             pd.DataFrame(columns=["rpm", "J", "CT", "CP"]), height=260,
@@ -379,7 +471,7 @@ class Workbench:
             callback=self._download_propulsion_csv, disabled=True,
         )
         self.propulsion_metrics = pn.pane.HTML()
-        self.propulsor_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=220)
+        self.propulsor_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=150)
         self.propulsion_plot = pn.pane.Matplotlib(height=560, tight=True, format="svg")
         self.propulsion_warnings = pn.pane.Alert(alert_type="warning", visible=False)
 
@@ -390,11 +482,44 @@ class Workbench:
         self.dynamics_warnings = pn.pane.Alert(alert_type="warning", visible=False)
         self.python_output = pn.pane.Markdown()
 
+        self._set_widget_descriptions()
         self._wire_callbacks()
         self._load_project(self.project)
+        self._loads_mode_changed()
         self.run_airfoil()
 
     # -- wiring and state -------------------------------------------------
+
+    def _set_widget_descriptions(self):
+        """Attach concise hover help to the controls students meet most often."""
+        descriptions = {
+            "reference_mode": "Choose how coefficient reference area, span, and chord are obtained.",
+            "reference_surface": "Surface that supplies Sref, bref, and cref.",
+            "surface_orientation": "Horizontal surfaces enter longitudinal analysis; vertical surfaces enter directional models.",
+            "surface_purpose": "Descriptive role; it does not change the solver.",
+            "surface_trim_control": "Geometry the trim solver may deflect to balance pitching moment.",
+            "surface_symmetric": "Reflect this stored half-surface across the aircraft centerline.",
+            "surface_control_hinge": "Chord fraction measured aft from the leading edge.",
+            "airfoil_re": "Section Reynolds number for this standalone airfoil sweep.",
+            "airfoil_transition": "Forced transition x/c; 1.0 applies no artificial trip and represents natural transition.",
+            "analysis_case": "Flight condition used for atmosphere, required lift, drag, and trim.",
+            "analysis_ns": "Spanwise panels assigned to the reference-span surface; other horizontal surfaces scale with span, with at least eight.",
+            "analysis_nc": "Chordwise panels used on every lifting surface in the VLM solve.",
+            "loads_mode": "Use a direct speed/load-factor case for RC sizing, or opt into a full maneuver/gust envelope.",
+            "loads_ns": "Spanwise panels used for the structural surface's aerodynamic load distribution.",
+            "loads_cl_max": "Positive stall boundary used to construct the maneuver envelope.",
+            "loads_cl_min": "Negative stall boundary used to construct the maneuver envelope.",
+            "loads_gust": "Sharp-edged vertical gust increment used for the gust lines [m/s].",
+            "loads_design_speed": "Zero uses the selected flight-case speed in direct mode or the positive corner speed in envelope mode.",
+            "loads_factor": "Positive limit load factor used to size the selected lifting surface and spar caps.",
+            "include_propulsion_masses": "Add catalog battery, motor, ESC, and propeller masses at their entered locations.",
+            "state_of_charge": "Fraction of usable battery charge remaining; affects open-circuit voltage.",
+            "propulsion_speed_points": "Number of points in the propulsion/airframe speed sweep.",
+        }
+        for name, description in descriptions.items():
+            widget = getattr(self, name)
+            if "description" in widget.param:
+                widget.description = description
 
     def _wire_callbacks(self):
         self.blank_button.on_click(lambda _: self._load_project(blank_project()))
@@ -434,6 +559,7 @@ class Workbench:
         self.delete_case_button.on_click(self._delete_case)
 
         self.airfoil_upload.param.watch(self._airfoil_uploaded, "value")
+        self.add_naca_button.on_click(self._add_naca_section)
         self.run_airfoil_button.on_click(self.run_airfoil)
         self.run_analysis_button.on_click(self.run_integrated_analysis)
         self.run_loads_button.on_click(self.run_loads_analysis)
@@ -487,8 +613,12 @@ class Workbench:
         self.analysis_case.param.watch(self._analysis_inputs_changed, "value")
         self.analysis_ns.param.watch(self._analysis_inputs_changed, "value")
         self.analysis_nc.param.watch(self._analysis_inputs_changed, "value")
+        self.show_mass_components.param.watch(lambda _: self._refresh_geometry(), "value")
+        self.show_panel_mesh.param.watch(lambda _: self._refresh_geometry(), "value")
+        self.loads_mode.param.watch(self._loads_mode_changed, "value")
         for widget in (
-            self.loads_case, self.loads_surface, self.loads_cl_max, self.loads_cl_min,
+            self.loads_case, self.loads_surface,
+            self.loads_cl_max, self.loads_cl_min,
             self.loads_n_pos, self.loads_n_neg, self.loads_v_max, self.loads_gust,
             self.loads_factor, self.loads_design_speed, self.loads_ns, self.loads_spar_height,
             self.loads_allowable, self.loads_ultimate_factor, self.loads_modulus,
@@ -518,8 +648,11 @@ class Workbench:
         self.reference_span.value = project.reference.span or 1.0
         self.reference_chord.value = project.reference.chord or 0.2
         self.body_table.value = pd.DataFrame([asdict(body) for body in project.bodies])
-        self.mass_table.value = pd.DataFrame([asdict(item) for item in project.masses])
-        self.case_table.value = pd.DataFrame([asdict(case) for case in project.cases])
+        self.mass_table.value = pd.DataFrame([
+            {**asdict(item), "distributed": item.distributed or "point"}
+            for item in project.masses
+        ])
+        self.case_table.value = pd.DataFrame([self._case_record(case) for case in project.cases])
         case_names = [case.name for case in project.cases]
         self.analysis_case.options = case_names
         self.analysis_case.value = case_names[0] if case_names else None
@@ -565,6 +698,18 @@ class Workbench:
             return
         self._invalidate_export_results()
         self._refresh_generated_python()
+
+    def _loads_mode_changed(self, _=None):
+        envelope_mode = self.loads_mode.value == "Maneuver/gust V–n envelope"
+        for widget in (
+            self.loads_cl_max, self.loads_cl_min, self.loads_n_pos,
+            self.loads_n_neg, self.loads_v_max, self.loads_gust,
+        ):
+            widget.visible = envelope_mode
+        suffix = "positive corner" if envelope_mode else "flight-case speed"
+        self.loads_design_speed.name = f"Structural design speed [m/s] (0 = {suffix})"
+        if not self._updating:
+            self._analysis_inputs_changed(None)
 
     def _airfoil_inputs_changed(self, _):
         if self._updating:
@@ -762,6 +907,7 @@ class Workbench:
         self.surface_symmetric.value = surface.symmetric
         self.station_table.value = pd.DataFrame([asdict(station) for station in surface.stations])
         self._updating = False
+        self._refresh_surface_geometry()
 
     def _surface_metadata_changed(self, _):
         if self._updating:
@@ -936,7 +1082,7 @@ class Workbench:
             ]
             rows = _coerce_records(event.new, schema, "Mass")
             for row in rows:
-                row["distributed"] = row["distributed"] or ""
+                row["distributed"] = row["distributed"] or "point"
                 row["attached_to"] = row["attached_to"] or ""
             self.project.masses = [MassItem(**row) for row in rows]
             self._refresh_all("Mass model updated.")
@@ -952,12 +1098,25 @@ class Workbench:
                 ("load_factor", float, False), ("alpha_deg", float, False),
                 ("interference", float, False), ("protuberance", float, False),
                 ("f_other", float, False), ("cooling", float, False),
+                ("transition", str, False),
                 ("n_crit", float, False), ("xtr_upper", float, False),
                 ("xtr_lower", float, False),
             ]
-            self.project.cases = [FlightCase(**row) for row in _coerce_records(event.new, schema, "Flight case")]
+            rows = _coerce_records(event.new, schema, "Flight case")
+            cases = []
+            for row in rows:
+                transition = row.pop("transition").lower()
+                if transition not in {"natural", "forced"}:
+                    raise ValueError("transition must be 'natural' or 'forced'")
+                if transition == "natural":
+                    row["xtr_upper"] = row["xtr_lower"] = 1.0
+                cases.append(FlightCase(**row))
+            self.project.cases = cases
             names = [case.name for case in self.project.cases]
             self._updating = True
+            self.case_table.value = pd.DataFrame([
+                self._case_record(case) for case in self.project.cases
+            ])
             self.analysis_case.options = names
             if self.analysis_case.value not in names:
                 self.analysis_case.value = names[0] if names else None
@@ -986,27 +1145,72 @@ class Workbench:
         self._delete_table_row(self.body_table)
 
     def _add_mass(self, _):
-        self._append_table_row(self.mass_table, asdict(MassItem("new component", 0.05, 0.25)))
+        self._append_table_row(
+            self.mass_table,
+            {**asdict(MassItem("new component", 0.05, 0.25)), "distributed": "point"},
+        )
 
     def _delete_mass(self, _):
         self._delete_table_row(self.mass_table)
 
     def _add_case(self, _):
-        self._append_table_row(self.case_table, asdict(FlightCase("New case", 12.0)))
+        self._append_table_row(self.case_table, self._case_record(FlightCase("New case", 12.0)))
 
     def _delete_case(self, _):
         self._delete_table_row(self.case_table)
 
     # -- airfoils ---------------------------------------------------------
 
+    @staticmethod
+    def _case_record(case):
+        row = asdict(case)
+        row["transition"] = (
+            "natural"
+            if math.isclose(case.xtr_upper, 1.0) and math.isclose(case.xtr_lower, 1.0)
+            else "forced"
+        )
+        ordered = [
+            "name", "speed", "altitude", "load_factor", "alpha_deg",
+            "interference", "protuberance", "transition", "n_crit",
+            "xtr_upper", "xtr_lower", "f_other", "cooling",
+        ]
+        return {name: row[name] for name in ordered}
+
     def _refresh_airfoil_options(self):
-        names = sorted(set(foil.available()) | set(self.project.airfoils) | {"naca0012", "naca2412"})
+        station_airfoils = {
+            station.airfoil for surface in self.project.surfaces for station in surface.stations
+        }
+        names = sorted(
+            set(foil.available()) | set(self.project.airfoils) | station_airfoils
+            | {"naca0009", "naca0012", "naca2412"}
+        )
         current = self.airfoil_select.value
         self.airfoil_select.options = names
         self.airfoil_select.value = current if current in names else "naca2412"
         editors = dict(self.station_table.editors)
         editors["airfoil"] = {"type": "list", "values": names}
         self.station_table.editors = editors
+
+    def _add_naca_section(self, _):
+        code = re.sub(r"\s+", "", self.naca_code.value.lower())
+        code = code.removeprefix("naca")
+        if not re.fullmatch(r"\d{4}", code):
+            self._error("Enter exactly four digits for a NACA four-digit section, such as 0009.")
+            return
+        key = f"naca{code}"
+        try:
+            foil.load(key)
+        except Exception as exc:
+            self._error(f"Could not generate {key.upper()}: {exc}")
+            return
+        names = sorted(set(self.airfoil_select.options) | {key})
+        self.airfoil_select.options = names
+        self.airfoil_select.value = key
+        editors = dict(self.station_table.editors)
+        editors["airfoil"] = {"type": "list", "values": names}
+        self.station_table.editors = editors
+        self.status.object = f"Added analytic section {key.upper()}; choose it in the station table."
+        self.status.alert_type = "success"
 
     # -- editable propulsion component library ---------------------------
 
@@ -1357,9 +1561,11 @@ class Workbench:
         self.validation.object = f"<div style='padding:10px;background:#fff8df'><ul>{items}</ul></div>"
 
     def _refresh_geometry(self):
-        fig = plt.figure(figsize=(10.5, 5.1))
-        ax3d = fig.add_subplot(121, projection="3d")
-        ax2d = fig.add_subplot(122)
+        fig = plt.figure(figsize=(10.8, 8.6))
+        ax3d = fig.add_subplot(221, projection="3d")
+        ax_plan = fig.add_subplot(222)
+        ax_side = fig.add_subplot(223)
+        ax_front = fig.add_subplot(224)
         colors = {"wing": "#2563a6", "tail": "#3b8554", "canard": "#7b55a3", "fin": "#a64b35", "other": "#6b7280"}
         for surface in self.project.surfaces:
             stations = surface.stations
@@ -1373,46 +1579,101 @@ class Workbench:
                 ax3d.plot(xle + chord, y, z, color=color)
                 for i in range(len(stations)):
                     ax3d.plot([xle[i], xle[i] + chord[i]], [y[i], y[i]], [z[i], z[i]], color=color, alpha=0.55)
-                ax2d.plot(xle, y, color=color)
-                ax2d.plot(xle + chord, y, color=color)
+                ax_plan.plot(xle, y, color=color)
+                ax_plan.plot(xle + chord, y, color=color)
+                ax_side.plot(xle, z, color=color)
+                ax_side.plot(xle + chord, z, color=color)
+                ax_front.plot(y, z, color=color)
                 for i in range(len(stations)):
-                    ax2d.plot([xle[i], xle[i] + chord[i]], [y[i], y[i]], color=color, alpha=0.55)
+                    ax_plan.plot([xle[i], xle[i] + chord[i]], [y[i], y[i]], color=color, alpha=0.55)
+                    ax_side.plot([xle[i], xle[i] + chord[i]], [z[i], z[i]], color=color, alpha=0.55)
+
+            if self.show_panel_mesh.value:
+                try:
+                    _, b_ref, _ = self.project.reference_quantities()
+                    surface_ns = max(8, int(round(self.analysis_ns.value * surface.span / b_ref)))
+                    if surface.orientation == "vertical":
+                        grid = _display_grid_for_surface(
+                            surface, surface_ns, int(self.analysis_nc.value)
+                        )
+                    else:
+                        grid, _ = _grid_for_surface(
+                            self.project, surface, surface_ns, int(self.analysis_nc.value)
+                        )
+                    for sign in ([1, -1] if surface.symmetric else [1]):
+                        mesh = grid.copy()
+                        mesh[1] *= sign
+                        for i in range(mesh.shape[1]):
+                            ax3d.plot(*mesh[:, i, :], color="0.25", lw=0.35, alpha=0.65)
+                            ax_plan.plot(mesh[0, i, :], mesh[1, i, :], color="0.25", lw=0.35, alpha=0.65)
+                            ax_side.plot(mesh[0, i, :], mesh[2, i, :], color="0.25", lw=0.35, alpha=0.65)
+                            ax_front.plot(mesh[1, i, :], mesh[2, i, :], color="0.25", lw=0.35, alpha=0.65)
+                        for j in range(mesh.shape[2]):
+                            ax3d.plot(*mesh[:, :, j], color="0.25", lw=0.35, alpha=0.65)
+                            ax_plan.plot(mesh[0, :, j], mesh[1, :, j], color="0.25", lw=0.35, alpha=0.65)
+                            ax_side.plot(mesh[0, :, j], mesh[2, :, j], color="0.25", lw=0.35, alpha=0.65)
+                            ax_front.plot(mesh[1, :, j], mesh[2, :, j], color="0.25", lw=0.35, alpha=0.65)
+                except Exception:
+                    pass
         for body in self.project.bodies:
             x0 = body.x_nose or 0.0
+            width = body.diameter or body.width or body.height or 0.01
+            height = body.diameter or body.height or body.width or 0.01
             ax3d.plot([x0, x0 + body.length], [body.y, body.y], [body.z, body.z], color="0.35", lw=4)
-            ax2d.plot([x0, x0 + body.length], [body.y, body.y], color="0.35", lw=4, alpha=0.65)
+            ax_plan.add_patch(Ellipse((x0 + body.length / 2, body.y), body.length, width, fill=False, edgecolor="0.35", lw=1.2))
+            ax_side.add_patch(Ellipse((x0 + body.length / 2, body.z), body.length, height, fill=False, edgecolor="0.35", lw=1.2))
+            ax_front.add_patch(Ellipse((body.y, body.z), width, height, fill=False, edgecolor="0.35", lw=1.2))
         try:
             components = self.project.components()
-            maximum_mass = max((component.mass for component in components), default=1.0)
-            for index, component in enumerate(components):
-                size = 28.0 + 125.0 * np.sqrt(component.mass / maximum_mass)
-                label = "mass component" if index == 0 else None
-                ax3d.scatter(
-                    [component.x], [component.y], [component.z], s=size,
-                    color="#d58b16", edgecolor="white", linewidth=0.6,
-                    depthshade=False, label=label,
+            mp = stability.mass_properties(components)
+            ax3d.scatter([mp.x_cg], [mp.y_cg], [mp.z_cg], marker="X", s=90, color="black", edgecolor="white", depthshade=False)
+            for ax, xx, yy in (
+                (ax_plan, mp.x_cg, mp.y_cg),
+                (ax_side, mp.x_cg, mp.z_cg),
+                (ax_front, mp.y_cg, mp.z_cg),
+            ):
+                ax.scatter([xx], [yy], marker="X", s=70, color="black", edgecolor="white", zorder=9, label="CG" if ax is ax_plan else None)
+                ax.annotate("CG", (xx, yy), xytext=(5, 5), textcoords="offset points", fontsize=8, weight="bold")
+            if self.show_mass_components.value:
+                maximum_mass = max((component.mass for component in components), default=1.0)
+                for index, component in enumerate(components, start=1):
+                    size = 25.0 + 90.0 * np.sqrt(component.mass / maximum_mass)
+                    ax3d.scatter([component.x], [component.y], [component.z], s=size, color="#d58b16", edgecolor="white", linewidth=0.6, depthshade=False)
+                    for ax, xx, yy in (
+                        (ax_plan, component.x, component.y),
+                        (ax_side, component.x, component.z),
+                        (ax_front, component.y, component.z),
+                    ):
+                        ax.scatter([xx], [yy], s=size, color="#d58b16", edgecolor="white", linewidth=0.6, zorder=7)
+                        offset = (8 + 6 * ((index - 1) // 2)) * (1 if index % 2 else -1)
+                        ax.annotate(
+                            f"M{index}", (xx, yy), xytext=(5, offset),
+                            textcoords="offset points", fontsize=7, color="#7a4b00",
+                            arrowprops={"arrowstyle": "-", "lw": 0.35, "color": "#7a4b00"},
+                        )
+                rows = "".join(
+                    "<tr>"
+                    f"<td style='padding:3px 10px'><b>M{index}</b></td>"
+                    f"<td style='padding:3px 10px'>{escape(component.name)}</td>"
+                    f"<td style='padding:3px 10px'>{component.mass:.4g} kg</td>"
+                    "</tr>"
+                    for index, component in enumerate(components, start=1)
                 )
-                ax2d.scatter(
-                    [component.x], [component.y], s=size, color="#d58b16",
-                    edgecolor="white", linewidth=0.6, zorder=5, label=label,
+                self.mass_marker_legend.object = (
+                    "<div style='overflow-x:auto'><b>Mass-marker key</b>"
+                    f"<table>{rows}</table></div>"
                 )
-                short_name = component.name if len(component.name) <= 28 else component.name[:25] + "…"
-                ax2d.annotate(
-                    short_name, (component.x, component.y), xytext=(4, 4),
-                    textcoords="offset points", fontsize=6.5, color="#7a4b00",
-                )
+                self.mass_marker_legend.visible = True
+            else:
+                self.mass_marker_legend.visible = False
         except Exception:
             # Validation and the Mass tab report incomplete mass rows. Keep the
             # geometry itself usable while a student is in the middle of an edit.
+            self.mass_marker_legend.visible = False
             pass
 
         setup = self.project.propulsion
         if setup is not None:
-            try:
-                _, b_ref, _ = self.project.reference_quantities()
-                arrow_length = max(0.12 * b_ref, 0.12)
-            except Exception:
-                arrow_length = 0.15
             for index, propulsor in enumerate(setup.propulsors):
                 pitch = np.radians(propulsor.pitch_deg)
                 yaw = np.radians(propulsor.yaw_deg)
@@ -1421,44 +1682,39 @@ class Workbench:
                     np.cos(pitch) * np.sin(yaw),
                     np.sin(pitch),
                 ])
-                label = "propulsor / thrust" if index == 0 else None
-                ax3d.scatter(
-                    [propulsor.x], [propulsor.y], [propulsor.z], marker="D",
-                    s=42, color="#8b3fb0", depthshade=False, label=label,
+                try:
+                    definition = self.project.propeller(propulsor)
+                    diameter = definition.diameter or definition.model().diameter
+                except Exception:
+                    diameter = 0.01
+                normal = direction / np.linalg.norm(direction)
+                helper = np.array([0.0, 0.0, 1.0]) if abs(normal[2]) < 0.9 else np.array([0.0, 1.0, 0.0])
+                basis_1 = np.cross(normal, helper)
+                basis_1 /= np.linalg.norm(basis_1)
+                basis_2 = np.cross(normal, basis_1)
+                angle = np.linspace(0.0, 2.0 * np.pi, 81)
+                center = np.array([propulsor.x, propulsor.y, propulsor.z])
+                disk = center[:, None] + 0.5 * diameter * (
+                    basis_1[:, None] * np.cos(angle) + basis_2[:, None] * np.sin(angle)
                 )
-                ax3d.quiver(
-                    propulsor.x, propulsor.y, propulsor.z,
-                    *(arrow_length * direction), color="#8b3fb0",
-                    arrow_length_ratio=0.18, linewidth=1.8,
-                )
-                ax2d.scatter(
-                    [propulsor.x], [propulsor.y], marker="D", s=42,
-                    color="#8b3fb0", zorder=6, label=label,
-                )
-                ax2d.arrow(
-                    propulsor.x, propulsor.y,
-                    arrow_length * direction[0], arrow_length * direction[1],
-                    color="#8b3fb0", width=0.002, head_width=0.025,
-                    length_includes_head=True, zorder=5,
-                )
-                ax2d.annotate(
-                    propulsor.name, (propulsor.x, propulsor.y), xytext=(4, -10),
-                    textcoords="offset points", fontsize=7, color="#6a2888",
-                )
-        ax3d.set(xlabel="x aft [m]", ylabel="y right [m]", zlabel="z up [m]", title="3D lifting-surface stations")
+                label = "propeller disk" if index == 0 else None
+                ax3d.plot(*disk, color="#8b3fb0", lw=1.8)
+                ax_plan.plot(disk[0], disk[1], color="#8b3fb0", lw=1.8, label=label)
+                ax_side.plot(disk[0], disk[2], color="#8b3fb0", lw=1.8)
+                ax_front.plot(disk[1], disk[2], color="#8b3fb0", lw=1.8)
+                ax_front.annotate(f"P{index + 1}", (propulsor.y, propulsor.z), xytext=(5, 5), textcoords="offset points", fontsize=7, color="#6a2888")
+        ax3d.set(xlabel="x aft [m]", ylabel="y right [m]", zlabel="z up [m]", title="3D")
         _set_axes_equal_3d(ax3d)
-        ax2d.set(xlabel="x aft [m]", ylabel="y right [m]", title="Planform", aspect="equal")
-        ax2d.grid(alpha=0.2)
-        if self.project.masses or setup is not None:
-            ax2d.legend(fontsize=7, loc="best")
+        ax_plan.set(xlabel="x aft [m]", ylabel="y right [m]", title="Planform (top)")
+        ax_side.set(xlabel="x aft [m]", ylabel="z up [m]", title="Side")
+        ax_front.set(xlabel="y right [m]", ylabel="z up [m]", title="Front")
+        for ax in (ax_plan, ax_side, ax_front):
+            ax.set_aspect("equal", adjustable="datalim")
+            ax.grid(alpha=0.2)
+        ax_plan.legend(fontsize=7, loc="best")
         fig.tight_layout()
-        old_geometry = self.geometry_plot.object
-        old_surface = self.surface_geometry_plot.object
-        self.geometry_plot.object = fig
-        self.surface_geometry_plot.object = fig
-        for old in (old_geometry, old_surface):
-            if old is not None and old is not fig:
-                plt.close(old)
+        self._replace_figure(self.geometry_plot, fig)
+        self._refresh_surface_geometry()
         try:
             primary = self.project.primary_horizontal_surface
             S_ref, b_ref, c_ref = self.project.reference_quantities()
@@ -1478,10 +1734,10 @@ class Workbench:
                 ("Vehicle mass", f"{mp.mass:.4g} kg"),
                 ("CG (x, y, z)", f"{mp.x_cg:.3g}, {mp.y_cg:.3g}, {mp.z_cg:.3g} m"),
                 ("Reference loading W/Sref", f"{wing_loading:.2f} N/m²"),
-                ("Reference area Sref", f"{S_ref:.4g} m²"),
-                ("Reference span bref", f"{b_ref:.4g} m"),
+                ("Reference area Sref", f"{S_ref:.4f} m²"),
+                ("Reference span bref", f"{b_ref:.4f} m"),
                 ("Reference aspect ratio", f"{b_ref**2 / S_ref:.2f}"),
-                ("Reference chord cref", f"{c_ref:.4g} m"),
+                ("Reference chord cref", f"{c_ref:.4f} m"),
                 ("Horizontal-tail volume", f"{vh:.3f}" if np.isfinite(vh) else "—"),
                 ("Vertical-tail volume", f"{vv:.3f}" if np.isfinite(vv) else "—"),
                 ("Bodies / mass items", f"{len(self.project.bodies)} / {len(self.project.masses)}"),
@@ -1499,6 +1755,98 @@ class Workbench:
         except Exception as exc:
             self.geometry_summary.object = f"<p>Geometry summary unavailable: {escape(str(exc))}</p>"
 
+    def _refresh_surface_geometry(self):
+        """Show the selected lifting surface and its body-axis panel preview."""
+        surface = self._current_surface()
+        if surface is None or len(surface.stations) < 2:
+            return
+        fig = plt.figure(figsize=(10.4, 7.2))
+        ax3d = fig.add_subplot(221, projection="3d")
+        ax_plan = fig.add_subplot(222)
+        ax_side = fig.add_subplot(223)
+        ax_front = fig.add_subplot(224)
+        axes_2d = (ax_plan, ax_side, ax_front)
+        try:
+            _, b_ref, _ = self.project.reference_quantities()
+            ns = max(8, int(round(self.analysis_ns.value * surface.span / b_ref)))
+        except Exception:
+            ns = max(8, int(self.analysis_ns.value))
+        nc = int(self.analysis_nc.value)
+        grid = _display_grid_for_surface(surface, ns, nc)
+        color = "#a64b35" if surface.orientation == "vertical" else "#2563a6"
+        for sign in ([1, -1] if surface.symmetric else [1]):
+            mesh = grid.copy()
+            mesh[1] *= sign
+            for index in range(mesh.shape[1]):
+                ax3d.plot(*mesh[:, index, :], color=color, lw=0.6)
+                ax_plan.plot(mesh[0, index, :], mesh[1, index, :], color=color, lw=0.6)
+                ax_side.plot(mesh[0, index, :], mesh[2, index, :], color=color, lw=0.6)
+                ax_front.plot(mesh[1, index, :], mesh[2, index, :], color=color, lw=0.6)
+            for index in range(mesh.shape[2]):
+                ax3d.plot(*mesh[:, :, index], color=color, lw=0.6)
+                ax_plan.plot(mesh[0, :, index], mesh[1, :, index], color=color, lw=0.6)
+                ax_side.plot(mesh[0, :, index], mesh[2, :, index], color=color, lw=0.6)
+                ax_front.plot(mesh[1, :, index], mesh[2, :, index], color=color, lw=0.6)
+        ax3d.set(xlabel="x aft [m]", ylabel="y right [m]", zlabel="z up [m]", title="3D panel preview")
+        _set_axes_equal_3d(ax3d)
+        ax_plan.set(xlabel="x aft [m]", ylabel="y right [m]", title="Planform (top)")
+        ax_side.set(xlabel="x aft [m]", ylabel="z up [m]", title="Side")
+        ax_front.set(xlabel="y right [m]", ylabel="z up [m]", title="Front")
+        for axis in axes_2d:
+            axis.set_aspect("equal", adjustable="datalim")
+            axis.grid(alpha=0.2)
+        fig.suptitle(f"{surface.name} — {ns} spanwise × {nc} chordwise panels")
+        fig.tight_layout()
+        self._replace_figure(self.surface_geometry_plot, fig)
+
+    def _refresh_mass_geometry(self, components, mass_properties):
+        """Draw mass locations in the tab where students edit those masses."""
+        fig, (ax_plan, ax_side) = plt.subplots(1, 2, figsize=(10.4, 4.4))
+        colors = {"wing": "#2563a6", "tail": "#3b8554", "canard": "#7b55a3", "fin": "#a64b35", "other": "#6b7280"}
+        for surface in self.project.surfaces:
+            color = colors.get(surface.purpose, "0.5")
+            for sign in ([1, -1] if surface.symmetric else [1]):
+                x_le = np.array([station.x_le for station in surface.stations])
+                chord = np.array([station.chord for station in surface.stations])
+                y = sign * np.array([station.y for station in surface.stations])
+                z = np.array([station.z for station in surface.stations])
+                ax_plan.plot(x_le, y, color=color, alpha=0.65)
+                ax_plan.plot(x_le + chord, y, color=color, alpha=0.65)
+                ax_side.plot(x_le, z, color=color, alpha=0.65)
+                ax_side.plot(x_le + chord, z, color=color, alpha=0.65)
+        for body in self.project.bodies:
+            x0 = body.x_nose or 0.0
+            width = body.diameter or body.width or body.height or 0.01
+            height = body.diameter or body.height or body.width or 0.01
+            ax_plan.add_patch(Ellipse((x0 + body.length / 2, body.y), body.length, width, fill=False, edgecolor="0.45"))
+            ax_side.add_patch(Ellipse((x0 + body.length / 2, body.z), body.length, height, fill=False, edgecolor="0.45"))
+        maximum_mass = max((component.mass for component in components), default=1.0)
+        for index, component in enumerate(components, start=1):
+            size = 30.0 + 95.0 * np.sqrt(component.mass / maximum_mass)
+            for axis, horizontal, vertical in (
+                (ax_plan, component.x, component.y),
+                (ax_side, component.x, component.z),
+            ):
+                axis.scatter([horizontal], [vertical], s=size, color="#d58b16", edgecolor="white", zorder=7)
+                offset = (9 + 7 * ((index - 1) // 2)) * (1 if index % 2 else -1)
+                axis.annotate(
+                    f"M{index}", (horizontal, vertical), xytext=(5, offset),
+                    textcoords="offset points", fontsize=8, color="#7a4b00",
+                    arrowprops={"arrowstyle": "-", "lw": 0.4, "color": "#7a4b00"},
+                )
+        for axis, horizontal, vertical in (
+            (ax_plan, mass_properties.x_cg, mass_properties.y_cg),
+            (ax_side, mass_properties.x_cg, mass_properties.z_cg),
+        ):
+            axis.scatter([horizontal], [vertical], marker="X", s=80, color="black", edgecolor="white", zorder=9)
+            axis.annotate("CG", (horizontal, vertical), xytext=(5, 5), textcoords="offset points", fontsize=8, weight="bold")
+            axis.set_aspect("equal", adjustable="datalim")
+            axis.grid(alpha=0.2)
+        ax_plan.set(xlabel="x aft [m]", ylabel="y right [m]", title="Mass locations — planform")
+        ax_side.set(xlabel="x aft [m]", ylabel="z up [m]", title="Mass locations — side")
+        fig.tight_layout()
+        self._replace_figure(self.mass_geometry_plot, fig)
+
     def _refresh_component_summaries(self):
         """Update live body-drag and independently entered mass results."""
         try:
@@ -1513,6 +1861,7 @@ class Workbench:
             mass_models = {item.name: item.distributed or "point" for item in self.project.masses}
             self.mass_results.value = pd.DataFrame([
                 {
+                    "marker": f"M{index}",
                     "component": component.name,
                     "model": mass_models.get(component.name, "propulsion library"),
                     "calculated mass [kg]": component.mass,
@@ -1523,8 +1872,9 @@ class Workbench:
                     "Iyy at CG [kg m²]": component.Iyy_cg,
                     "Izz at CG [kg m²]": component.Izz_cg,
                 }
-                for component in components
+                for index, component in enumerate(components, start=1)
             ])
+            self._refresh_mass_geometry(components, mp)
         except Exception as exc:
             self.mass_summary.object = f"Mass result unavailable: {escape(str(exc))}"
             self.mass_results.value = pd.DataFrame([{"result": f"Unavailable: {exc}"}])
@@ -1660,8 +2010,14 @@ class Workbench:
         ax = axes[2, 0]
         for name in solution.surfaces:
             view = solution.surface(name)
-            ax.plot(view.y, view.ccl, label=name)
-        ax.set(xlabel="semispan station [m]", ylabel="$c c_l$ [m]", title="Span loading")
+            # Results live at cosine-spaced panel centers. Extend the first
+            # value to the symmetry plane so a line plot does not imply an
+            # uncomputed root discontinuity.
+            ax.plot(np.r_[0.0, view.y], np.r_[view.ccl[0], view.ccl], label=name)
+        ax.set(
+            xlabel="semispan panel center [m]", ylabel="$c c_l$ [m]",
+            title="Semispan loading (root value extended to symmetry plane)",
+        )
         ax.legend(fontsize=8)
 
         ax = axes[2, 1]
@@ -1691,28 +2047,33 @@ class Workbench:
             mass = mass_properties.mass
             S_ref, _, c_ref = self.project.reference_quantities()
             aircraft = self.project.equivalent_aircraft()
-            maximum_speed = None if self.loads_v_max.value <= 0 else self.loads_v_max.value
-            envelope = loads.vn_diagram(
-                aircraft,
-                mass=mass,
-                CL_max=self.loads_cl_max.value,
-                CL_min=self.loads_cl_min.value,
-                altitude=case.altitude,
-                n_pos=self.loads_n_pos.value,
-                n_neg=self.loads_n_neg.value,
-                V_max=maximum_speed,
-                reference_area=S_ref,
-            )
+            envelope_mode = self.loads_mode.value == "Maneuver/gust V–n envelope"
+            envelope = None
+            if envelope_mode:
+                maximum_speed = None if self.loads_v_max.value <= 0 else self.loads_v_max.value
+                envelope = loads.vn_diagram(
+                    aircraft,
+                    mass=mass,
+                    CL_max=self.loads_cl_max.value,
+                    CL_min=self.loads_cl_min.value,
+                    altitude=case.altitude,
+                    n_pos=self.loads_n_pos.value,
+                    n_neg=self.loads_n_neg.value,
+                    V_max=maximum_speed,
+                    reference_area=S_ref,
+                )
 
             design_n = float(self.loads_factor.value)
             if design_n <= 0:
                 raise ValueError("structural design load factor must be positive")
             entered_design_speed = float(self.loads_design_speed.value)
-            design_speed = (
-                float(envelope["V_A"]) if entered_design_speed == 0.0
-                else entered_design_speed
-            )
-            if design_speed <= 0.0 or design_speed > envelope["V_max"]:
+            if entered_design_speed == 0.0:
+                design_speed = float(envelope["V_A"]) if envelope_mode else float(case.speed)
+            else:
+                design_speed = entered_design_speed
+            if design_speed <= 0.0:
+                raise ValueError("structural design speed must be positive")
+            if envelope_mode and design_speed > envelope["V_max"]:
                 raise ValueError(
                     "structural design speed must be positive and no greater than "
                     "the maneuver-envelope maximum speed"
@@ -1765,17 +2126,19 @@ class Workbench:
             )
             deflection = loads.tip_deflection(span, EI=cap_EI)
 
-            gust_speed = np.linspace(0.0, envelope["V_max"], 160)
-            lift_slope_per_radian = lift_slope_per_degree * 180.0 / np.pi
-            gust_positive = loads.gust_load_factor(
-                aircraft, gust_speed, gust=self.loads_gust.value, mass=mass,
-                CL_alpha=lift_slope_per_radian, altitude=case.altitude,
-                reference_area=S_ref, reference_chord=c_ref,
-            )
-            gust_negative = 2.0 - gust_positive
+            if envelope_mode:
+                gust_speed = np.linspace(0.0, envelope["V_max"], 160)
+                lift_slope_per_radian = lift_slope_per_degree * 180.0 / np.pi
+                gust_positive = loads.gust_load_factor(
+                    aircraft, gust_speed, gust=self.loads_gust.value, mass=mass,
+                    CL_alpha=lift_slope_per_radian, altitude=case.altitude,
+                    reference_area=S_ref, reference_chord=c_ref,
+                )
+                gust_negative = 2.0 - gust_positive
 
             self._last_loads_result = {
                 "case": case.name,
+                "mode": "envelope" if envelope_mode else "direct",
                 "load_factor": design_n,
                 "envelope": envelope,
                 "span_load": span,
@@ -1790,11 +2153,9 @@ class Workbench:
             surface_stem = _safe_filename(surface.name).removesuffix(".flightlab.json")
             self.loads_download.filename = f"{stem}_{surface_stem}_span_load.csv"
             self.loads_download.disabled = False
-            self.loads_metrics.object = self._metric_cards([
+            metrics = [
                 ("Aircraft mass", f"{mass:.4g} kg"),
-                ("Reference W/S", f"{envelope['wing_loading']:.4g} N/m²"),
-                ("Stall speed", f"{envelope['V_stall']:.3g} m/s"),
-                ("Corner speed", f"{envelope['V_A']:.3g} m/s"),
+                ("Reference W/S", f"{mass * loads.G0 / S_ref:.4g} N/m²"),
                 ("Structural case", f"n={design_n:.3g} at {design_speed:.3g} m/s"),
                 ("Solved angle of attack", f"{alpha:.3g}°"),
                 (f"{surface.name} root shear", f"{span.root_shear:.4g} N"),
@@ -1805,23 +2166,35 @@ class Workbench:
                 ("Cap-only EI", f"{cap_EI:.4g} N·m²"),
                 ("Tip deflection", f"{1e3 * deflection['tip_deflection']:.4g} mm"),
                 ("Tip / semispan", f"{100 * deflection['tip_over_semispan']:.3g}%"),
-            ])
+            ]
+            if envelope_mode:
+                metrics[2:2] = [
+                    ("Stall speed", f"{envelope['V_stall']:.3g} m/s"),
+                    ("Corner speed", f"{envelope['V_A']:.3g} m/s"),
+                ]
+            self.loads_metrics.object = self._metric_cards(metrics)
 
-            fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.5))
-            ax = axes[0, 0]
-            ax.plot(envelope["V_upper"], envelope["n_upper"], label="positive maneuver")
-            ax.plot(envelope["V_lower"], envelope["n_lower"], label="negative maneuver")
-            ax.plot(gust_speed, gust_positive, "--", label="positive gust")
-            ax.plot(gust_speed, gust_negative, "--", label="negative gust")
-            ax.axvline(envelope["V_A"], color="0.45", lw=1, label="corner speed")
-            ax.set(xlabel="true airspeed [m/s]", ylabel="load factor n", title="Maneuver and gust envelope")
-            ax.legend(fontsize=7)
+            if envelope_mode:
+                fig, axes = plt.subplots(2, 2, figsize=(10.5, 8.5))
+                ax = axes[0, 0]
+                ax.plot(envelope["V_upper"], envelope["n_upper"], label="positive maneuver")
+                ax.plot(envelope["V_lower"], envelope["n_lower"], label="negative maneuver")
+                ax.plot(gust_speed, gust_positive, "--", label="positive gust")
+                ax.plot(gust_speed, gust_negative, "--", label="negative gust")
+                ax.axvline(envelope["V_A"], color="0.45", lw=1, label="corner speed")
+                ax.set(xlabel="true airspeed [m/s]", ylabel="load factor n", title="Maneuver and gust envelope")
+                ax.legend(fontsize=7)
+                span_axis, internal_axis, deflection_axis = axes[0, 1], axes[1, 0], axes[1, 1]
+                grid_axes = axes.ravel()
+            else:
+                fig, (span_axis, internal_axis, deflection_axis) = plt.subplots(1, 3, figsize=(11.2, 4.5))
+                grid_axes = (span_axis, internal_axis, deflection_axis)
 
-            ax = axes[0, 1]
+            ax = span_axis
             ax.plot(span.y, span.lift, color="#2563a6")
             ax.set(xlabel="semispan station [m]", ylabel="net aerodynamic load [N/m]", title=f"{surface.name} span load")
 
-            ax = axes[1, 0]
+            ax = internal_axis
             shear_line = ax.plot(span.y, span.shear, color="#2f855a", label="shear")
             ax.set(xlabel="semispan station [m]", ylabel="shear [N]", title="Internal shear and bending moment")
             moment_axis = ax.twinx()
@@ -1829,10 +2202,10 @@ class Workbench:
             moment_axis.set_ylabel("bending moment [N·m]")
             ax.legend(shear_line + moment_line, ["shear", "moment"], fontsize=8)
 
-            ax = axes[1, 1]
+            ax = deflection_axis
             ax.plot(deflection["y"], 1e3 * deflection["deflection"], color="#7b55a3")
             ax.set(xlabel="semispan station [m]", ylabel="deflection [mm]", title="Cap-only beam deflection")
-            for axis in axes.ravel():
+            for axis in grid_axes:
                 axis.grid(alpha=0.22)
             moment_axis.grid(False)
             fig.suptitle(f"{self.project.name} — loads and preliminary spar caps")
@@ -1840,13 +2213,14 @@ class Workbench:
             self._replace_figure(self.loads_plots, fig)
 
             warnings = [
-                "The V–n envelope uses the aircraft reference area; the span load and root moment are for the selected lifting surface.",
-                "The structural VLM solve holds pitch-control deflection at zero and is linear through the entered CLmax boundary.",
+                "The structural VLM solve holds pitch-control deflection at zero and is linear about the solved load case.",
                 "Distributed structural/fuel/battery mass is not yet applied as inertial relief, so the root moment is conservative when substantial mass lies in the wing.",
                 "The two-cap beam omits web sizing, buckling, joints, local loads, fatigue, aeroelasticity, and material knockdowns. The deflection uses cap stiffness only.",
             ]
-            if design_n > envelope["n_pos"]:
-                warnings.insert(0, "The structural design factor exceeds the entered positive limit load factor.")
+            if envelope_mode:
+                warnings.insert(0, "The optional V–n envelope uses the aircraft reference area; the structural results are for the selected lifting surface.")
+                if design_n > envelope["n_pos"]:
+                    warnings.insert(0, "The structural design factor exceeds the entered positive limit load factor.")
             self.loads_warnings.object = "\n".join(f"• {item}" for item in warnings)
             self.loads_warnings.alert_type = "warning"
             self.loads_warnings.visible = True
@@ -2039,6 +2413,21 @@ class Workbench:
         filename = _safe_filename(self.project.name)
         case_name = self.analysis_case.value or (self.project.cases[0].name if self.project.cases else "Cruise")
         loads_v_max = None if self.loads_v_max.value <= 0 else float(self.loads_v_max.value)
+        if self.loads_mode.value == "Maneuver/gust V–n envelope":
+            load_case_setup = f'''# Optional maneuver/gust envelope.
+envelope = loads.vn_diagram(
+    project.equivalent_aircraft(), mass=mass_properties.mass,
+    CL_max={self.loads_cl_max.value:.8g}, CL_min={self.loads_cl_min.value:.8g},
+    altitude=case.altitude, n_pos={self.loads_n_pos.value:.8g},
+    n_neg={self.loads_n_neg.value:.8g}, V_max={loads_v_max!r},
+    reference_area=S_ref,
+)
+design_speed = {self.loads_design_speed.value:.8g} or envelope["V_A"]'''
+            envelope_print = 'print("corner speed [m/s] =", envelope["V_A"])'
+        else:
+            load_case_setup = f'''# Direct RC structural case; no certification-style V-n envelope.
+design_speed = {self.loads_design_speed.value:.8g} or case.speed'''
+            envelope_print = ""
         code = f'''from dataclasses import replace
 
 import numpy as np
@@ -2074,17 +2463,10 @@ axes[1, 0].plot(polar.alpha, polar.LD)
 axes[1, 1].plot(polar.alpha, polar.Cm)
 plt.show()
 
-# Maneuver/gust envelope, selected-surface span load, and two-cap spar sizing.
+# Selected-surface span load and two-cap spar sizing.
 mass_properties = stability.mass_properties(project.components())
 S_ref, _, c_ref = project.reference_quantities()
-envelope = loads.vn_diagram(
-    project.equivalent_aircraft(), mass=mass_properties.mass,
-    CL_max={self.loads_cl_max.value:.8g}, CL_min={self.loads_cl_min.value:.8g},
-    altitude=case.altitude, n_pos={self.loads_n_pos.value:.8g},
-    n_neg={self.loads_n_neg.value:.8g}, V_max={loads_v_max!r},
-    reference_area=S_ref,
-)
-design_speed = {self.loads_design_speed.value:.8g} or envelope["V_A"]
+{load_case_setup}
 load_case = replace(
     case, speed=design_speed, load_factor={self.loads_factor.value:.8g}
 )
@@ -2115,7 +2497,7 @@ spar = loads.spar_sizing(
 cap_EI = ({self.loads_modulus.value:.8g}e9 * spar["cap_area"]
           * {self.loads_spar_height.value:.8g}**2 / 2.0)
 beam = loads.tip_deflection(span, EI=cap_EI)
-print("corner speed [m/s] =", envelope["V_A"])
+{envelope_print}
 print("root moment [N m] =", span.root_moment)
 print("required area of each cap [m^2] =", spar["cap_area"])
 print("cap-only tip deflection [m] =", beam["tip_deflection"])
@@ -2209,37 +2591,46 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
 
         airfoil_controls = pn.Column(
             pn.Row(self.airfoil_select, self.airfoil_upload),
-            pn.Row(self.airfoil_re, self.airfoil_alpha_min, self.airfoil_alpha_max, self.airfoil_transition),
+            pn.Row(self.naca_code, self.add_naca_button),
+            pn.Row(self.airfoil_re, self.airfoil_transition),
+            pn.Row(self.airfoil_alpha_min, self.airfoil_alpha_max),
             self.airfoil_plots,
             pn.Row(self.run_airfoil_button, self.airfoil_download),
         )
-        analysis_controls = pn.Row(
-            self.analysis_case, self.analysis_ns, self.analysis_nc,
-            self.run_analysis_button, self.analysis_download, self.analysis_span_download,
-            sizing_mode="stretch_width",
+        analysis_controls = pn.Column(
+            pn.Row(self.analysis_case, self.analysis_ns, self.analysis_nc),
+            pn.Row(self.run_analysis_button, self.analysis_download, self.analysis_span_download),
+        )
+        analysis_help = pn.pane.Alert(
+            "Spanwise panels use cosine spacing. The entered count applies to a surface with the "
+            "reference span; each other horizontal surface is scaled by its span and receives at "
+            "least eight panels. The chordwise count applies to every lifting surface. Bodies are "
+            "not panelled: they use the empirical drag correlations shown in the component table. "
+            "Span-loading values are reported at panel centers, and a symmetric wing normally has "
+            "its largest loading near the root.",
+            alert_type="light",
         )
         loads_help = pn.pane.Alert(
             "This tab uses the current project's total mass, aircraft reference area, selected atmosphere, "
-            "and full-station VLM geometry. The V–n inputs define the maneuver envelope. The structural "
-            "case uses the entered design speed and load factor; a zero design speed selects the positive corner. "
-            "Choose which horizontal surface carries the spar being sized. `CLmax`, limit factors, material "
+            "and full-station VLM geometry. For an RC airplane, the default direct mode sizes a stated speed/load-factor "
+            "case and does not require a certification-style V–n diagram. The optional envelope mode adds maneuver and "
+            "sharp-edged-gust context; in that mode, a zero design speed selects the positive corner. In direct mode, "
+            "zero selects the flight-case speed. Choose which horizontal surface carries the spar being sized. Material "
             "allowable, modulus, cap spacing, and cap width are design inputs—not values inferred from geometry. "
             "The reported cap area is required for each of two equal caps.",
             alert_type="light",
         )
         loads_controls = pn.Column(
-            pn.Row(self.loads_case, self.loads_surface, self.loads_ns),
-            "### Flight envelope and load case",
-            pn.Row(self.loads_cl_max, self.loads_cl_min, self.loads_n_pos, self.loads_n_neg),
-            pn.Row(
-                self.loads_v_max, self.loads_gust,
-                self.loads_design_speed, self.loads_factor,
-            ),
+            pn.Row(self.loads_case, self.loads_surface, self.loads_mode, self.loads_ns),
+            "### Structural design case",
+            pn.Row(self.loads_cl_max, self.loads_cl_min),
+            pn.Row(self.loads_n_pos, self.loads_n_neg),
+            pn.Row(self.loads_v_max, self.loads_gust),
+            pn.Row(self.loads_design_speed, self.loads_factor),
             "### Two-cap spar idealization",
-            pn.Row(
-                self.loads_spar_height, self.loads_allowable, self.loads_ultimate_factor,
-                self.loads_modulus, self.loads_cap_width,
-            ),
+            pn.Row(self.loads_spar_height, self.loads_allowable),
+            pn.Row(self.loads_ultimate_factor, self.loads_modulus),
+            pn.Row(self.loads_cap_width),
             pn.Row(self.run_loads_button, self.loads_download),
         )
         body_help = pn.pane.Markdown(
@@ -2290,8 +2681,8 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             ),
             pn.Row(
                 self.battery_x, self.battery_y, self.battery_z,
-                self.run_propulsion_button, self.propulsion_download,
             ),
+            pn.Row(self.run_propulsion_button, self.propulsion_download),
             "### Propulsors",
             self.propulsor_table,
             pn.Row(self.add_propulsor_button, self.delete_propulsor_button),
@@ -2320,14 +2711,27 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
                     self.propeller_data_select, self.propeller_data_upload, self.propeller_data_table,
                     pn.Row(self.add_propeller_point_button, self.delete_propeller_point_button),
                 )),
-                dynamic=False,
+                dynamic=True,
             ),
         )
 
         tabs = pn.Tabs(
-            ("Aircraft", pn.Column(reference_controls, self.geometry_summary, self.geometry_plot, "### Lifting-surface summary", self.surface_summary_table, self.validation)),
+            ("Aircraft", pn.Column(
+                reference_controls, self.geometry_summary,
+                pn.Row(self.show_mass_components, self.show_panel_mesh),
+                self.geometry_plot, self.mass_marker_legend, "### Lifting-surface summary",
+                self.surface_summary_table, self.validation,
+            )),
             ("Airfoils", pn.Column(airfoil_controls, self.airfoil_metrics, self.airfoil_plot, "### Model diagnostics", self.airfoil_diagnostics)),
-            ("Lifting surfaces", pn.Column(station_help, role_help, surface_controls, control_geometry, self.station_table, surface_buttons, self.surface_geometry_plot)),
+            ("Lifting surfaces", pn.Column(
+                station_help, role_help, surface_controls, control_geometry,
+                self.station_table, surface_buttons,
+                pn.pane.Alert(
+                    "The preview below shows only the selected lifting surface and its body-axis panel topology; masses, bodies, and propulsion markers are intentionally omitted.",
+                    alert_type="light",
+                ),
+                self.surface_geometry_plot,
+            )),
             ("Bodies", pn.Column(
                 body_help, self.body_table, pn.Row(self.add_body_button, self.delete_body_button),
                 "### Body drag results at the first flight case", self.body_results,
@@ -2335,16 +2739,19 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             ("Mass", pn.Column(
                 mass_help, "### Which mass model should I use?", mass_model_guide,
                 self.mass_table, pn.Row(self.add_mass_button, self.delete_mass_button),
+                "### Mass locations", self.mass_geometry_plot,
                 "### Calculated component properties", self.mass_results,
                 "### Vehicle mass properties", self.mass_summary,
             )),
             ("Flight cases", pn.Column(
                 "Cases share one aircraft but carry their own speed, altitude, load factor, drag markups, "
-                "surface cleanliness (`n_crit`), and optional forced-transition locations (`xtr_upper/lower`).",
+                "surface cleanliness (`n_crit`), and transition assumptions. **Natural** means no forced "
+                "trip and sets upper/lower transition x/c to 1.0. **alpha_deg is only the initial guess** "
+                "for integrated trim; the solver reports the trimmed angle of attack.",
                 self.case_table, pn.Row(self.add_case_button, self.delete_case_button),
             )),
             ("Analysis", pn.Column(
-                analysis_controls, self.analysis_metrics, self.analysis_warnings,
+                analysis_help, analysis_controls, self.analysis_metrics, self.analysis_warnings,
                 self.analysis_plots, "### Component drag table", self.drag_table,
             )),
             ("Loads & structures", pn.Column(
