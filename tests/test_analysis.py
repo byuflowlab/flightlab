@@ -910,33 +910,57 @@ def test_the_low_re_body_model_blends_smoothly_into_the_book_model():
 
     # Below the overlap, body_cd_frontal is exactly Hoerner's wetted-area
     # expression converted to frontal area with the book's wetted-area model.
-    for fr in (1.0, 2.0, 3.8, drag.BODY_BLEND_START):
+    for fr in (1.0, 2.0, 3.8, 4.0):
         expected = (
             drag.hoerner_low_re_body_cd_wetted(fr, Re_L)
             * 4.0 * shape * fr
         )
         assert drag.body_cd_frontal(fr, Re_L, Re_d) == pytest.approx(expected)
 
-    # Smoothstep makes both value and slope continuous at the overlap ends.
-    h = 1e-4
-    for fr in (drag.BODY_BLEND_START, drag.BODY_BLEND_END):
-        left = (
-            drag.body_cd_frontal(fr, Re_L, Re_d)
-            - drag.body_cd_frontal(fr - h, Re_L, Re_d)
-        ) / h
-        right = (
-            drag.body_cd_frontal(fr + h, Re_L, Re_d)
-            - drag.body_cd_frontal(fr, Re_L, Re_d)
-        ) / h
-        assert left == pytest.approx(right, abs=2e-5)
-
-    # Drag falls as a low-Re pod becomes more slender before wetted-area drag
-    # eventually turns the total back upward in the blend/slender-body range.
+    # Drag falls as a low-Re pod becomes more slender.
     cds = [drag.body_cd_frontal(f, Re_L, Re_d) for f in (1.0, 1.5, 2.0, 3.0, 4.0)]
     assert all(a > b for a, b in zip(cds, cds[1:]))
     # and within reach of Hoerner's measured streamline bodies
     assert drag.body_cd_frontal(2.0, Re_L, Re_d) == pytest.approx(0.20, rel=0.30)
     assert drag.body_cd_frontal(3.0, Re_L, Re_d) == pytest.approx(0.13, rel=0.35)
+
+
+def test_compact_body_blend_matches_value_and_slope_at_both_edges():
+    """The rounded maximum is C1 where it becomes either exact model."""
+    half_width = 0.5 * drag.BODY_BLEND_RELATIVE_WIDTH
+    boundaries = (
+        (1.0 - half_width) / (1.0 + half_width),
+        (1.0 + half_width) / (1.0 - half_width),
+    )
+    h = 1e-6
+    for a in boundaries:
+        center = drag._smooth_maximum(a, 1.0)
+        left = (center - drag._smooth_maximum(a - h, 1.0)) / h
+        right = (drag._smooth_maximum(a + h, 1.0) - center) / h
+        assert left == pytest.approx(right, abs=5e-6)
+
+
+def test_body_blend_does_not_add_turning_points_to_hw1s_pod_sweep():
+    """Both source models decrease here, so their join must decrease too.
+
+    HW 1 holds pod volume and width/height ratio fixed while increasing length.
+    The former fineness-weighted smoothstep introduced a false minimum and
+    maximum between fineness 4 and 6 even though both source drag areas were
+    decreasing over that interval.
+    """
+    air = atmos.at(1400.0)
+    volume = 0.400 * 0.110 * 0.100
+    drag_areas = []
+    for length in np.linspace(0.250, 0.695, 301):
+        S_max = volume / length
+        diameter = np.sqrt(4.0 * S_max / np.pi)
+        fineness = length / diameter
+        Re_L = float(air.reynolds(12.0, length))
+        Re_d = float(air.reynolds(12.0, diameter))
+        cd = drag.body_cd_frontal(fineness, Re_L, Re_d)
+        drag_areas.append(cd * S_max)
+
+    assert np.all(np.diff(drag_areas) < 0.0)
 
 
 def test_sphere_cd_hits_the_subcritical_plateau():

@@ -292,12 +292,11 @@ def sphere_cd(Re) -> np.ndarray:
     )
 
 
-#: Fineness-ratio overlap used to join Hoerner's low-Re body correlation to
-#: the course text's slender-body form-factor method.  The overlap straddles
-#: the text's stated lower limit of 5 rather than treating it as a physical
-#: regime boundary.
-BODY_BLEND_START = 4.0
-BODY_BLEND_END = 6.0
+#: Relative separation of the two body correlations over which their maximum
+#: is rounded.  At the centre of the blend, the result is only 3.75% above the
+#: common value; outside this compact interval it is exactly one correlation
+#: or the other.
+BODY_BLEND_RELATIVE_WIDTH = 0.15
 
 
 def hoerner_low_re_body_cd_wetted(
@@ -330,26 +329,47 @@ def hoerner_low_re_body_cd_wetted(
     return float(cf_lam * (1.0 + fr**-1.5) + 0.11 / fr**2)
 
 
+def _smooth_maximum(a: float, b: float) -> float:
+    """Compact C1 rounding of ``max(a, b)`` for positive coefficients.
+
+    A direct fineness-weighted average can acquire two artificial stationary
+    points when one body correlation is falling and the other is rising.  The
+    upper envelope has no such undershoot.  This quadratic rounding removes
+    the envelope's corner only while the predictions differ by less than 15%
+    of their mean, and matches both value and slope where it becomes the exact
+    maximum.
+    """
+    epsilon = BODY_BLEND_RELATIVE_WIDTH * 0.5 * (a + b)
+    delta = a - b
+    if delta >= epsilon:
+        return float(a)
+    if delta <= -epsilon:
+        return float(b)
+    return float(0.5 * (a + b) + 0.25 * (delta**2 / epsilon + epsilon))
+
+
 def body_cd_frontal(fineness: float, Re_length: float, Re_diameter: float,
                     mach: float = 0.0, xtr: float = 0.0,
                     cone_fraction: float = 0.4) -> float:
     """Drag coefficient of a body of revolution, on its **frontal** area.
 
-    Two correlations joined with a cubic smoothstep over fineness ratios 4--6.
+    Two correlations joined by a compact, shape-preserving smooth maximum.
 
-    **Low-Re Hoerner**, below fineness 4: Hoerner's continuous total-drag
+    **Low-Re Hoerner**, at low fineness: Hoerner's continuous total-drag
     expression on wetted area, including an additive separation term.  It is
     intended for the stubby pod-like bodies common on electric RC aircraft.
 
-    **Slender body**, above fineness 6: the course text's method, skin friction
+    **Slender body**, at high fineness: the course text's method, skin friction
     over the wetted area times its form factor.  The text states that method is
     valid above fineness 5.
 
-    Between 4 and 6, ``w = 3 u^2 - 2 u^3`` blends the two predictions, where
-    ``u = (fr - 4) / 2``.  The zero slope of ``w`` at both ends makes the
-    result and its first derivative continuous.  Fineness is a proxy for the
-    gradual change from separation-dominated pod drag to attached slender-body
-    drag, not a claim that the flow changes regimes at a precise value.
+    FlightLab follows the larger prediction and rounds the corner while the
+    two differ by less than 15% of their mean.  For the intended RC conditions
+    their crossing lies between fineness ratios 4 and 6.  Unlike a prescribed
+    fineness-weighted average, this construction cannot dip below both models
+    or introduce a down-up-down oscillation as pod length is swept.  It also
+    lets the crossover move naturally with Reynolds number and transition
+    state rather than claiming a precise flow-regime boundary.
 
     Parameters
     ----------
@@ -378,14 +398,7 @@ def body_cd_frontal(fineness: float, Re_length: float, Re_diameter: float,
         return cf * form_factor_body(f) * 4.0 * shape * f
 
     low_re = hoerner_low_re_body_cd_wetted(fr, Re_length, mach) * wet_to_frontal
-    if fr <= BODY_BLEND_START:
-        return float(low_re)
-    if fr >= BODY_BLEND_END:
-        return streamlined(fr)
-
-    u = (fr - BODY_BLEND_START) / (BODY_BLEND_END - BODY_BLEND_START)
-    weight = u**2 * (3.0 - 2.0 * u)
-    return float((1.0 - weight) * low_re + weight * streamlined(fr))
+    return _smooth_maximum(low_re, streamlined(fr))
 
 
 def oswald_efficiency(e_inv: float, CDp: float, aspect_ratio: float,
@@ -738,13 +751,11 @@ def buildup(
         cd = body_cd_frontal(fr, Re, Re_d, M, xtr, cone)
         S_max = 0.25 * np.pi * d**2 * body.count
         f_body = cd * S_max
-        if fr >= BODY_BLEND_END:
-            FF = form_factor_body(fr)
-        else:
-            # The Hoerner expression contains additive pressure drag rather
-            # than a geometric form factor.  Report the equivalent factor at
-            # this condition so the tabulated identity f = Cf FF S_wet holds.
-            FF = f_body / (cf * S_wet)
+        # The Hoerner expression contains additive pressure drag rather than a
+        # geometric form factor.  Report the equivalent factor at this
+        # condition so the tabulated identity f = Cf FF S_wet always holds.
+        # In the pure slender-body range this reduces to form_factor_body(fr).
+        FF = f_body / (cf * S_wet)
         rows.append(Row(body.name, kind, S_wet, body.length, Re, cf, FF,
                         f_body, cd))
 

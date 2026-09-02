@@ -311,7 +311,7 @@ def _table(frame, height=260, editors=None, configuration=None, header_tooltips=
     return pn.widgets.Tabulator(
         frame,
         show_index=False,
-        selectable="checkbox-single",
+        selectable="checkbox",
         height=height,
         editors=editors or {},
         configuration=configuration or {"layout": "fitColumns"},
@@ -565,7 +565,7 @@ class Workbench:
             }, configuration={"layout": "fitDataTable"},
         )
         self.add_propulsor_button = pn.widgets.Button(label="Add propulsor", icon="plus")
-        self.delete_propulsor_button = pn.widgets.Button(label="Delete selected propulsor", icon="trash")
+        self.delete_propulsor_button = pn.widgets.Button(label="Delete selected", icon="trash")
         self.motor_table = _table(pd.DataFrame(), height=205, configuration={"layout": "fitDataTable"})
         self.battery_table = _table(pd.DataFrame(), height=175, configuration={"layout": "fitDataTable"})
         self.esc_table = _table(pd.DataFrame(), height=145, configuration={"layout": "fitDataTable"})
@@ -579,15 +579,15 @@ class Workbench:
             label="Import coefficient CSV", accept=".csv,.txt"
         )
         self.add_motor_button = pn.widgets.Button(label="Add motor", icon="plus")
-        self.delete_motor_button = pn.widgets.Button(label="Delete selected motor", icon="trash")
+        self.delete_motor_button = pn.widgets.Button(label="Delete selected", icon="trash")
         self.add_battery_button = pn.widgets.Button(label="Add battery", icon="plus")
-        self.delete_battery_button = pn.widgets.Button(label="Delete selected battery", icon="trash")
+        self.delete_battery_button = pn.widgets.Button(label="Delete selected", icon="trash")
         self.add_esc_button = pn.widgets.Button(label="Add ESC", icon="plus")
-        self.delete_esc_button = pn.widgets.Button(label="Delete selected ESC", icon="trash")
+        self.delete_esc_button = pn.widgets.Button(label="Delete selected", icon="trash")
         self.add_propeller_button = pn.widgets.Button(label="Add propeller", icon="plus")
-        self.delete_propeller_button = pn.widgets.Button(label="Delete selected propeller", icon="trash")
+        self.delete_propeller_button = pn.widgets.Button(label="Delete selected", icon="trash")
         self.add_propeller_point_button = pn.widgets.Button(label="Add coefficient point", icon="plus")
-        self.delete_propeller_point_button = pn.widgets.Button(label="Delete selected point", icon="trash")
+        self.delete_propeller_point_button = pn.widgets.Button(label="Delete selected", icon="trash")
         self.run_propulsion_button = pn.widgets.Button(label="Run propulsion analysis", color="primary", icon="player-play")
         self.propulsion_speed_min = pn.widgets.FloatInput(
             label="Sweep minimum speed [m/s] (0 = automatic)", value=0.0, start=0.0, step=1.0
@@ -1265,16 +1265,23 @@ class Workbench:
 
     def _delete_station(self, _):
         surface = self._current_surface()
-        selected = self.station_table.selection
+        selected = sorted(set(self.station_table.selection))
         if surface is None or not selected:
-            self._error("Select one station row to delete.")
+            self._error("Select at least one station row to delete.")
             return
-        if len(surface.stations) <= 2:
+        if len(surface.stations) - len(selected) < 2:
             self._error("A lifting surface needs at least two stations.")
             return
-        surface.stations.pop(selected[0])
+        selected_set = set(selected)
+        surface.stations = [
+            station for index, station in enumerate(surface.stations)
+            if index not in selected_set
+        ]
+        self.station_table.selection = []
         self._show_selected_surface()
-        self._refresh_all(f"Deleted a station from {surface.name}.")
+        count = len(selected)
+        noun = "station" if count == 1 else "stations"
+        self._refresh_all(f"Deleted {count} {noun} from {surface.name}.")
 
     def _add_surface(self, _):
         index = len(self.project.surfaces) + 1
@@ -1400,9 +1407,10 @@ class Workbench:
 
     def _delete_table_row(self, table):
         if not table.selection:
-            self._error("Select one row to delete.")
+            self._error("Select at least one row to delete.")
             return
-        frame = table.value.drop(table.value.index[table.selection[0]]).reset_index(drop=True)
+        selected = sorted(set(table.selection))
+        frame = table.value.drop(table.value.index[selected]).reset_index(drop=True)
         if table is self.mass_table:
             # Apply the new frame explicitly. Some browser/Tabulator versions
             # coalesce the shorter DataFrame assignment and its value watcher,

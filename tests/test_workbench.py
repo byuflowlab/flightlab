@@ -15,7 +15,13 @@ from flightlab.workbench import Workbench, _coerce_records
 
 def test_workbench_builds_and_runs_integrated_analysis():
     workbench = Workbench()
-    assert workbench.mass_table.selectable == "checkbox-single"
+    editable_tables = (
+        workbench.station_table, workbench.body_table, workbench.mass_table,
+        workbench.case_table, workbench.propulsor_table, workbench.motor_table,
+        workbench.battery_table, workbench.esc_table,
+        workbench.propeller_table, workbench.propeller_data_table,
+    )
+    assert all(table.selectable == "checkbox" for table in editable_tables)
     view = workbench.view()
     workbench.run_integrated_analysis()
 
@@ -104,17 +110,46 @@ def test_workbench_builds_and_runs_integrated_analysis():
 def test_mass_deletion_refreshes_every_derived_view():
     workbench = Workbench()
     workbench.show_mass_components.value = True
-    removed_name = workbench.mass_table.value.iloc[1]["name"]
-    workbench.mass_table.selection = [1]
+    removed_names = set(workbench.mass_table.value.iloc[[0, 2]]["name"])
+    workbench.mass_table.selection = [0, 2]
     workbench._delete_mass(None)
 
     component_count = len(workbench.project.components())
-    assert len(workbench.project.masses) == 2
-    assert removed_name not in set(workbench.mass_results.value["component"])
+    assert len(workbench.project.masses) == 1
+    assert removed_names.isdisjoint(workbench.mass_results.value["component"])
     assert len(workbench.mass_results.value) == component_count
     # One collection per component plus the CG in both figures.
     assert len(workbench.geometry_plot.object.axes[0].collections) == component_count + 1
     assert len(workbench.mass_geometry_plot.object.axes[0].collections) == component_count + 1
+
+
+def test_common_table_delete_removes_every_selected_row():
+    workbench = Workbench()
+    original = workbench.body_table.value.iloc[0].to_dict()
+    second = {**original, "name": "second body"}
+    workbench.body_table.value = pd.DataFrame([original, second])
+    removed_names = set(workbench.body_table.value.iloc[[0, 1]]["name"])
+    workbench.body_table.selection = [0, 1]
+    workbench._delete_body(None)
+
+    assert removed_names.isdisjoint(body.name for body in workbench.project.bodies)
+    assert workbench.body_table.selection == []
+
+
+def test_station_delete_handles_multiple_rows_and_preserves_minimum():
+    workbench = Workbench()
+    surface = workbench._current_surface()
+    assert len(surface.stations) == 4
+    workbench.station_table.selection = [1, 2]
+    workbench._delete_station(None)
+
+    assert len(surface.stations) == 2
+    assert workbench.station_table.selection == []
+
+    workbench.station_table.selection = [0, 1]
+    workbench._delete_station(None)
+    assert len(surface.stations) == 2
+    assert "at least two stations" in workbench.status.object
 
 
 def test_workbench_exposes_project_loads_and_spar_sizing():
