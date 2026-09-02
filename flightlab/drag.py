@@ -23,7 +23,7 @@ the spanwise variation the buildup averages away.  It resolves only the wing.
     >>> from flightlab.fleet import C172
     >>> b = drag.buildup(C172, V=50.0, altitude=0.0)
     >>> round(b.CD0, 5), round(b.f, 3)
-    (0.02433, 0.393)
+    (0.0245, 0.396)
 
 Units
 -----
@@ -57,6 +57,7 @@ __all__ = [
     "wave_drag",
     "drag_divergence_mach",
     "body_form_factor_valid",
+    "hoerner_low_re_body_cd_wetted",
     "sphere_cd",
     "body_cd_frontal",
     "crest_critical_mach",
@@ -215,10 +216,9 @@ def form_factor_body(fineness: float, strict: bool = False) -> float:
         effective diameter :func:`effective_diameter` returns.
     strict : bool
         Raise a warning when ``fr < 5``, the text's stated lower limit.  Off by
-        default, because a stubby body is not an error and the buildup reports
-        it as data instead: :attr:`Row.extrapolated` marks the row and
-        :meth:`Buildup.table` footnotes it.  Turn it on for a direct call where
-        you want to be stopped.
+        default for direct exploratory calls.  The aircraft buildup does not
+        extrapolate this fit: :func:`body_cd_frontal` uses Hoerner's low-Re
+        relation below the fit's range and blends the two through an overlap.
 
     Notes
     -----
@@ -238,7 +238,7 @@ def form_factor_body(fineness: float, strict: bool = False) -> float:
             "course text's fit is stated as valid only for fr > 5; below that "
             f"it is being extrapolated and returns "
             f"{1.675 - 0.09 * fr + 0.003 * fr**2:.3f}.  Treat a body this "
-            "stubby as bluff instead (Body(drag_model='faired')).",
+            "stubby with body_cd_frontal instead.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -249,12 +249,11 @@ def body_form_factor_valid(fineness: float) -> bool:
     """Whether :func:`form_factor_body` is inside its stated validity.
 
     The text gives the fit for ``fr > 5``.  Below that the quadratic is still
-    well behaved -- it does not blow up the way some other correlations do --
-    but it is extrapolated, and the aircraft this course actually builds sits
-    there: RC-1's pod has a fineness ratio of 3.8, because a pod that has to
-    hold a battery, an ESC, a receiver and three servos in 400 mm is stubby.
-    That is worth reporting rather than hiding, and worth remembering when a
-    transport-derived correlation is pointed at a model aeroplane.
+    well behaved, but it is extrapolated.  The aircraft this course actually
+    builds sits there: RC-1's pod has a fineness ratio of 3.8, because a pod
+    that has to hold a battery, an ESC, a receiver and three servos in 400 mm
+    is stubby.  The complete buildup handles that range with
+    :func:`body_cd_frontal` rather than extrapolating this form-factor fit.
     """
     return float(fineness) >= 5.0
 
@@ -293,37 +292,64 @@ def sphere_cd(Re) -> np.ndarray:
     )
 
 
-#: Fineness ratio below which a body is treated as bluff rather than
-#: streamlined.  See :func:`body_cd_frontal` for where the number comes from.
-BLUFF_FINENESS = 4.0
+#: Fineness-ratio overlap used to join Hoerner's low-Re body correlation to
+#: the course text's slender-body form-factor method.  The overlap straddles
+#: the text's stated lower limit of 5 rather than treating it as a physical
+#: regime boundary.
+BODY_BLEND_START = 4.0
+BODY_BLEND_END = 6.0
+
+
+def hoerner_low_re_body_cd_wetted(
+    fineness: float, Re_length: float, mach: float = 0.0
+) -> float:
+    """Hoerner's low-Re body drag coefficient on **wetted area**.
+
+    ``CD_wet = Cf_lam (1 + 1 / fr^1.5) + 0.11 / fr^2``
+
+    This is a total-drag correlation: the first term represents surface
+    friction and the additive term represents pressure drag associated with
+    separation.  It is therefore not a form factor multiplying the user's
+    selected turbulent or transitional flat-plate coefficient.
+
+    Parameters
+    ----------
+    fineness : float
+        Length over effective diameter.
+    Re_length : float
+        Reynolds number on the body length.
+    mach : float
+        Used only for the same flat-plate compressibility correction applied
+        elsewhere in the buildup.  FlightLab's intended RC cases are at low
+        Mach number, where the correction is negligible.
+    """
+    fr = float(fineness)
+    if fr <= 0.0:
+        raise ValueError("fineness ratio must be positive")
+    cf_lam = float(flat_plate_cf(Re_length, mach, xtr=1.0))
+    return float(cf_lam * (1.0 + fr**-1.5) + 0.11 / fr**2)
 
 
 def body_cd_frontal(fineness: float, Re_length: float, Re_diameter: float,
                     mach: float = 0.0, xtr: float = 0.0,
-                    cone_fraction: float = 0.4,
-                    bluff_below: float = BLUFF_FINENESS) -> float:
+                    cone_fraction: float = 0.4) -> float:
     """Drag coefficient of a body of revolution, on its **frontal** area.
 
-    Two regimes, joined continuously.
+    Two correlations joined with a cubic smoothstep over fineness ratios 4--6.
 
-    **Streamlined**, above ``bluff_below``: the course text's method, skin
-    friction over the wetted area times a form factor, re-expressed on frontal
-    area.  For a body with a gradually closing afterbody the flow stays
-    attached and this is the right picture.
+    **Low-Re Hoerner**, below fineness 4: Hoerner's continuous total-drag
+    expression on wetted area, including an additive separation term.  It is
+    intended for the stubby pod-like bodies common on electric RC aircraft.
 
-    **Bluff**, below ``bluff_below``: a short body cannot close gradually, the
-    flow separates, and skin friction over a wetted area stops describing what
-    is happening.  What is happening is closer to a sphere, so the coefficient
-    is interpolated logarithmically between :func:`sphere_cd` at a fineness
-    ratio of 1 -- where the body *is* a sphere -- and the streamlined value at
-    the crossover.
+    **Slender body**, above fineness 6: the course text's method, skin friction
+    over the wetted area times its form factor.  The text states that method is
+    valid above fineness 5.
 
-    Why the crossover sits at 4 rather than at the text's stated limit of 5:
-    the text's fit, extrapolated, gives 0.12 on frontal area at a fineness of
-    4, and Hoerner's measured streamline bodies of revolution sit at 0.10-0.13
-    there, so it is still describing reality.  At a fineness of 2 it gives
-    0.068 against a measured 0.20, and at 1 it gives 0.036 against a sphere's
-    0.47.  It fails below about 3, not below 5.
+    Between 4 and 6, ``w = 3 u^2 - 2 u^3`` blends the two predictions, where
+    ``u = (fr - 4) / 2``.  The zero slope of ``w`` at both ends makes the
+    result and its first derivative continuous.  Fineness is a proxy for the
+    gradual change from separation-dominated pod drag to attached slender-body
+    drag, not a claim that the flow changes regimes at a precise value.
 
     Parameters
     ----------
@@ -331,9 +357,9 @@ def body_cd_frontal(fineness: float, Re_length: float, Re_diameter: float,
         Length over effective diameter.
     Re_length, Re_diameter : float
         Reynolds numbers on the length and on the effective diameter.
+        ``Re_diameter`` is retained for API compatibility with the former
+        sphere-interpolation model; the Hoerner expression does not use it.
     mach, xtr, cone_fraction : float
-    bluff_below : float
-        Fineness ratio below which the bluff treatment takes over.
 
     Returns
     -------
@@ -341,22 +367,25 @@ def body_cd_frontal(fineness: float, Re_length: float, Re_diameter: float,
         ``CD`` referenced to the maximum cross-sectional area.
     """
     fr = float(fineness)
+    if fr <= 0.0:
+        raise ValueError("fineness ratio must be positive")
     shape = 1.0 - 0.25 * float(np.clip(cone_fraction, 0.0, 1.0))
+    wet_to_frontal = 4.0 * shape * fr
 
     def streamlined(f):
         # Cf * k * (pi d L * shape) / (pi d^2 / 4) = Cf * k * 4 * shape * f
         cf = float(flat_plate_cf(Re_length, mach, xtr))
         return cf * form_factor_body(f) * 4.0 * shape * f
 
-    if fr >= bluff_below:
+    low_re = hoerner_low_re_body_cd_wetted(fr, Re_length, mach) * wet_to_frontal
+    if fr <= BODY_BLEND_START:
+        return float(low_re)
+    if fr >= BODY_BLEND_END:
         return streamlined(fr)
 
-    cd_sphere = float(sphere_cd(Re_diameter))
-    cd_match = streamlined(bluff_below)
-    if fr <= 1.0:
-        return cd_sphere
-    t = np.log(fr) / np.log(bluff_below)
-    return float(np.exp((1.0 - t) * np.log(cd_sphere) + t * np.log(cd_match)))
+    u = (fr - BODY_BLEND_START) / (BODY_BLEND_END - BODY_BLEND_START)
+    weight = u**2 * (3.0 - 2.0 * u)
+    return float((1.0 - weight) * low_re + weight * streamlined(fr))
 
 
 def oswald_efficiency(e_inv: float, CDp: float, aspect_ratio: float,
@@ -407,7 +436,10 @@ class Row:
     cf : float
         Flat-plate skin friction.
     FF : float
-        Form factor.
+        Form factor.  For a body in the Hoerner/blended range, this is the
+        condition-dependent equivalent multiplier that preserves
+        ``f = cf * FF * S_wet``; Hoerner's additive pressure-drag term means it
+        is not a purely geometric form factor there.
     f : float
         Drag area, ``cf * FF * S_wet``, m^2.  Additive across components, which
         coefficients are not until they share a reference area.
@@ -567,7 +599,6 @@ def buildup(
     xtr: float = 0.0,
     xtr_wing: Optional[float] = None,
     carry_through: bool = True,
-    bluff_below: float = BLUFF_FINENESS,
     dT: float = 0.0,
     include: Optional[Sequence[str]] = None,
 ) -> Buildup:
@@ -600,10 +631,6 @@ def buildup(
         Laminar run fraction on bodies.
     xtr_wing : float, optional
         Laminar run on lifting surfaces; defaults to ``xtr``.
-    bluff_below : float
-        Fineness ratio below which a body is treated as bluff rather than
-        streamlined -- see :func:`body_cd_frontal`.  Set it to 0 to force the
-        streamlined method everywhere.
     carry_through : bool
         Subtract the wing and tail carry-through inside the widest body, so
         wetted area is exposed area.  The text's definition; turning it off
@@ -708,20 +735,18 @@ def buildup(
         Re_d = float(air.reynolds(V, d))
         cf = float(flat_plate_cf(Re, M, xtr))
         cone = float(getattr(body, "cone_fraction", 0.4))
-        cd = body_cd_frontal(fr, Re, Re_d, M, xtr, cone, bluff_below)
+        cd = body_cd_frontal(fr, Re, Re_d, M, xtr, cone)
         S_max = 0.25 * np.pi * d**2 * body.count
         f_body = cd * S_max
-        if fr >= bluff_below:
+        if fr >= BODY_BLEND_END:
             FF = form_factor_body(fr)
-            note = ""
         else:
-            FF = float("nan")
-            note = (
-                f"fineness {fr:.2f} is below {bluff_below:.0f}, so this body is "
-                "treated as bluff: CD on frontal area, blended toward a sphere"
-            )
+            # The Hoerner expression contains additive pressure drag rather
+            # than a geometric form factor.  Report the equivalent factor at
+            # this condition so the tabulated identity f = Cf FF S_wet holds.
+            FF = f_body / (cf * S_wet)
         rows.append(Row(body.name, kind, S_wet, body.length, Re, cf, FF,
-                        f_body, cd, note))
+                        f_body, cd))
 
     if not rows:
         raise ValueError(

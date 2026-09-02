@@ -837,8 +837,8 @@ C172 = Aircraft(
             count=3,
             notes=(
                 "speed fairings over the wheels; the nose gear leg is inside "
-                "the cowling.  Fineness 2.5, so the buildup treats it as a "
-                "bluff body rather than a slender one -- see drag.body_cd_frontal"
+                "the cowling.  Fineness 2.5, so the buildup uses Hoerner's "
+                "low-Re body correlation -- see drag.body_cd_frontal"
             ),
         ),
         Body(

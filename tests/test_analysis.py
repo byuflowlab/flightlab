@@ -383,14 +383,13 @@ def test_the_slender_body_form_factor_warns_when_used_outside_its_range():
     assert drag.body_form_factor_valid(8.0)
 
 
-def test_rc1s_pod_is_outside_the_body_form_factor_fit_and_says_so():
-    """A true fact about analyzing a model aeroplane with transport
-    correlations, surfaced rather than suppressed."""
+def test_rc1s_pod_does_not_extrapolate_the_book_form_factor():
+    """The Hoerner extension covers the RC pod below the book fit's range."""
     b = drag.buildup(RC1, 12.0, 1400.0)
-    pods = [r for r in b.extrapolated_rows if "pod" in r.name]
-    assert pods, "RC-1's pod should be flagged as outside the fit"
-    assert "fineness" in pods[0].extrapolated
-    assert "*" in b.table()
+    pod = next(r for r in b.rows if "pod" in r.name)
+    assert RC1.bodies[0].fineness < 5.0
+    assert not pod.extrapolated
+    assert pod not in b.extrapolated_rows
 
 
 # --- stability --------------------------------------------------------------
@@ -904,25 +903,35 @@ def test_a_laminar_run_is_worth_a_lot_at_sailplane_reynolds_numbers():
     ) < 0.70
 
 
-def test_the_bluff_crossover_is_continuous_and_reduces_to_a_sphere():
-    """A short body is not a slender one with a bigger form factor.
-
-    Below a fineness of about 3 the text's slender-body fit understates badly:
-    0.068 on frontal area at fineness 2 against a measured 0.20, and 0.036 at
-    fineness 1 against a sphere's 0.47.  The bluff branch interpolates to the
-    sphere instead, and must join the streamlined branch without a step.
-    """
+def test_the_low_re_body_model_blends_smoothly_into_the_book_model():
+    """Pod drag uses Hoerner; slender-body drag remains the text's method."""
     Re_L, Re_d = 2.2e5, 5.8e4
-    eps = 1e-4
-    lo = drag.body_cd_frontal(drag.BLUFF_FINENESS - eps, Re_L, Re_d)
-    hi = drag.body_cd_frontal(drag.BLUFF_FINENESS + eps, Re_L, Re_d)
-    assert lo == pytest.approx(hi, rel=1e-3)
+    shape = 1.0 - 0.25 * 0.4
 
-    # a sphere is a sphere
-    assert drag.body_cd_frontal(1.0, Re_L, Re_d) == pytest.approx(
-        float(drag.sphere_cd(Re_d)), rel=1e-9
-    )
-    # monotonically less draggy as it gets more slender, through the bluff range
+    # Below the overlap, body_cd_frontal is exactly Hoerner's wetted-area
+    # expression converted to frontal area with the book's wetted-area model.
+    for fr in (1.0, 2.0, 3.8, drag.BODY_BLEND_START):
+        expected = (
+            drag.hoerner_low_re_body_cd_wetted(fr, Re_L)
+            * 4.0 * shape * fr
+        )
+        assert drag.body_cd_frontal(fr, Re_L, Re_d) == pytest.approx(expected)
+
+    # Smoothstep makes both value and slope continuous at the overlap ends.
+    h = 1e-4
+    for fr in (drag.BODY_BLEND_START, drag.BODY_BLEND_END):
+        left = (
+            drag.body_cd_frontal(fr, Re_L, Re_d)
+            - drag.body_cd_frontal(fr - h, Re_L, Re_d)
+        ) / h
+        right = (
+            drag.body_cd_frontal(fr + h, Re_L, Re_d)
+            - drag.body_cd_frontal(fr, Re_L, Re_d)
+        ) / h
+        assert left == pytest.approx(right, abs=2e-5)
+
+    # Drag falls as a low-Re pod becomes more slender before wetted-area drag
+    # eventually turns the total back upward in the blend/slender-body range.
     cds = [drag.body_cd_frontal(f, Re_L, Re_d) for f in (1.0, 1.5, 2.0, 3.0, 4.0)]
     assert all(a > b for a, b in zip(cds, cds[1:]))
     # and within reach of Hoerner's measured streamline bodies
@@ -935,9 +944,11 @@ def test_sphere_cd_hits_the_subcritical_plateau():
     assert float(drag.sphere_cd(1.0)) > 10.0  # Stokes-ish at the bottom
 
 
-def test_rc1s_pod_is_treated_as_bluff_and_the_table_says_so():
+def test_rc1s_pod_uses_the_low_re_hoerner_model():
     b = drag.buildup(RC1, 9.1, 1400.0)
     pod = next(r for r in b.rows if "pod" in r.name)
-    assert pod.extrapolated and "bluff" in pod.extrapolated
+    assert not pod.extrapolated
+    assert np.isfinite(pod.FF)
+    assert pod.f == pytest.approx(pod.cf * pod.FF * pod.S_wet)
     assert 0.10 < pod.cd_frontal < 0.20
     assert "CD_fr" in b.table()
