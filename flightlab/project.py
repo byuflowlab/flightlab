@@ -386,6 +386,23 @@ class AircraftProject:
     def surface_named(self, name: str) -> Optional[LiftingSurface]:
         return next((surface for surface in self.surfaces if surface.name == name), None)
 
+    def body_named(self, name: str) -> Optional[BodyDefinition]:
+        """Return the body with ``name``, or ``None`` when it is absent."""
+        return next((body for body in self.bodies if body.name == name), None)
+
+    def mass_named(self, name: str) -> Optional[MassItem]:
+        """Return the user-defined mass row with ``name``, or ``None``."""
+        return next((item for item in self.masses if item.name == name), None)
+
+    def propulsor_named(self, name: str) -> Optional[PropulsorSetup]:
+        """Return the configured propulsor with ``name``, or ``None``."""
+        if self.propulsion is None:
+            return None
+        return next(
+            (item for item in self.propulsion.propulsors if item.name == name),
+            None,
+        )
+
     @property
     def horizontal_surfaces(self) -> Tuple[LiftingSurface, ...]:
         return tuple(surface for surface in self.surfaces if surface.orientation == "horizontal")

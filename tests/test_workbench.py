@@ -56,6 +56,9 @@ def test_workbench_builds_and_runs_integrated_analysis():
     assert len(workbench.mass_geometry_plot.object.axes) == 2
     assert workbench.mass_geometry_plot.object.axes[0].collections
     assert "naca0009" in workbench.airfoil_select.options
+    assert "Reusable sweep pattern" in workbench.python_guide.object
+    assert "body_named" in workbench.python_guide.object
+    assert "total drag [N]" in workbench.python_output.object
     assert "point" in workbench.mass_table.editors["distributed"]["values"]
     assert set(workbench.case_table.value["transition"]) == {"natural"}
     propeller_line = next(

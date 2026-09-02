@@ -156,7 +156,13 @@ masses in the aircraft mass model when that option is enabled; multiple motor/ES
 share the selected battery and its total-current voltage sag.
 
 Use **Save project** to download a human-readable `.flightlab.json` file. The **Python** tab
-shows how to open that same file and reproduce the analysis in a Python script:
+shows how to open that same file, inspect and change its geometry and cases, run parameter
+sweeps, and use the named outputs. The full
+[Python workflow guide](docs/python-workflows.md) covers the project data model, every
+project-level analysis, result fields and units, safe copy-per-candidate studies, saving
+modified designs, and discovery of the lower-level toolbox.
+
+The smallest useful script is:
 
 ```python
 from flightlab.project import AircraftProject
@@ -165,7 +171,30 @@ from flightlab.project_analysis import aircraft_polar, run_design_point
 project = AircraftProject.load("my_aircraft.flightlab.json")
 result = run_design_point(project, project.case("Cruise"))
 polar = aircraft_polar(project, project.case("Cruise"))
+
+print(result.trim.alpha, result.trim.solution.CL, result.drag)
 ```
+
+Project inputs are editable. Named accessors avoid depending on list positions:
+
+```python
+from copy import deepcopy
+
+candidate = deepcopy(project)
+wing = candidate.surface_named("Main wing")
+fuselage = candidate.body_named("fuselage")
+if wing is None or fuselage is None:
+    raise KeyError("expected geometry is missing")
+
+wing.stations[-1].twist_deg = -2.0
+fuselage.length = 0.95
+candidate.require_valid()  # preflight check; raises ValueError for invalid inputs
+changed = run_design_point(candidate, candidate.case("Cruise"))
+```
+
+Keep the loaded project as an unchanged baseline and make a fresh copy for every point in a
+design sweep. The guide includes reusable one- and two-parameter patterns plus constrained
+geometry, temporary flight-condition, plotting, and output-discovery examples.
 
 The current workbench is a preliminary-design tool, not a body-panel clone of XFLR5. Bodies
 enter through handbook drag, mass properties, and documented stability approximations; the

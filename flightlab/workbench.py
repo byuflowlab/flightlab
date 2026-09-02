@@ -94,6 +94,129 @@ CASE_TOOLTIPS = {
     "xtr_lower": "Forced lower-surface transition location x/c; 1.0 means no forced trip.",
 }
 
+PYTHON_GUIDE = r"""
+## From workbench model to design study
+
+Save the `.flightlab.json` file beside your script. Treat it as the unchanged
+baseline, make a fresh copy for each candidate, validate the copy, then collect
+named results. FlightLab uses SI units and human-facing angles are in degrees.
+
+### Find and change inputs
+
+```python
+from copy import deepcopy
+from flightlab.project import AircraftProject
+
+baseline = AircraftProject.load("my-aircraft.flightlab.json")
+print([surface.name for surface in baseline.surfaces])
+print([body.name for body in baseline.bodies])
+print([item.name for item in baseline.masses])
+print([case.name for case in baseline.cases])
+
+candidate = deepcopy(baseline)
+wing = candidate.surface_named("Main wing")
+fuselage = candidate.body_named("fuselage")
+if wing is None or fuselage is None:
+    raise KeyError("expected geometry is missing")
+
+wing.stations[-1].chord = 0.12
+wing.stations[-1].twist_deg = -2.0
+fuselage.length = 0.95
+candidate.case("Cruise").speed = 14.0
+candidate.require_valid()
+```
+
+The editable input model is organized as follows:
+
+| Input | Where it lives |
+|---|---|
+| lifting-surface geometry and airfoils | `project.surfaces[*].stations` |
+| fuselages, pods, booms, struts | `project.bodies` |
+| point and geometry-attached masses | `project.masses` |
+| speed, altitude, load factor, drag assumptions | `project.cases` |
+| battery and installed propulsors | `project.propulsion` |
+| spar geometry and material properties | `project.structure` |
+
+Use `surface_named`, `body_named`, `mass_named`, `propulsor_named`, and `case`
+instead of depending on list positions.
+
+### Use the right analysis
+
+| Question | Function |
+|---|---|
+| trim, mass/CG, total and component drag | `run_design_point` |
+| whole-aircraft alpha sweep | `aircraft_polar` |
+| span load and preliminary spar sizing | `analyze_structure` |
+| battery–motor–propeller speed sweep | `analyze_propulsion` |
+| longitudinal and lateral modes | `analyze_dynamic_stability` |
+
+The **Current project script** tab imports and demonstrates all five using the
+file name, case, and numerical controls selected in this workbench.
+
+### Read named outputs
+
+For `result = run_design_point(...)`, commonly needed values are:
+
+| Quantity | Expression | Units |
+|---|---|---|
+| trim angle | `result.trim.alpha` | deg |
+| control deflection | `result.trim.trim_deflection` | deg |
+| lift coefficient | `result.trim.solution.CL` | — |
+| induced drag coefficient | `result.trim.solution.CD_i` | — |
+| total drag coefficient | `result.CD_total` | — |
+| total drag | `result.drag` | N |
+| lift-to-drag ratio | `result.lift_to_drag` | — |
+| mass and CG | `result.mass_properties.mass`, `.x_cg` | kg, m |
+| drag components | `result.buildup.rows` or `.table()` | rows/text |
+| model cautions | `result.warnings` | strings |
+
+Other result objects expose NumPy arrays such as `polar.CL`, `polar.CD`,
+`structure.span_load.moment`, `power.thrust_available`, and mode tables. Use
+`dataclasses.fields(result)` and `help(type(result))` to discover every field.
+
+### Reusable sweep pattern
+
+```python
+from copy import deepcopy
+import numpy as np
+from flightlab.project_analysis import run_design_point
+
+rows = []
+for value in np.linspace(0.10, 0.20, 11):
+    candidate = deepcopy(baseline)       # changes do not leak between trials
+    wing = candidate.surface_named("Main wing")
+    if wing is None:
+        raise KeyError("Main wing not found")
+    wing.stations[-1].chord = float(value)
+    candidate.require_valid()
+    result = run_design_point(candidate, candidate.case("Cruise"), ns=28, nc=4)
+    rows.append({
+        "tip chord [m]": value,
+        "drag [N]": result.drag,
+        "trim alpha [deg]": result.trim.alpha,
+        "L/D": result.lift_to_drag,
+    })
+```
+
+Keep `ns` and `nc` fixed while comparing candidates. Copy the project for
+physical changes; use `dataclasses.replace(case, speed=...)` for a temporary
+flight condition that should not alter the saved project.
+
+`candidate.require_valid()` is a preflight check. It raises `ValueError` with
+all validation errors; warnings are allowed. Project analyses also validate,
+but checking immediately after edits identifies a bad candidate before an
+expensive sweep. `project.validate()` returns the error/warning records when a
+script needs to display or filter them, and `project.save()` does not validate.
+
+For atmosphere, performance, airfoil, and other focused calculations, run
+`flightlab.show_tools()`, `flightlab.show_tools("performance")`, and
+`flightlab.example("performance")`, or use `help()` on a function.
+
+The repository's [complete Python workflow guide](https://github.com/byuflowlab/flightlab/blob/main/docs/python-workflows.md)
+adds constrained and multi-parameter studies, all result fields, plotting,
+saving modified projects, model limits, and common mistakes.
+"""
+
 
 def _records(frame: pd.DataFrame):
     return frame.replace({np.nan: None}).to_dict(orient="records")
@@ -489,6 +612,7 @@ class Workbench:
         self.derivative_table = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=300)
         self.dynamics_plot = pn.pane.Matplotlib(height=450, tight=True, format="svg")
         self.dynamics_warnings = pn.pane.Alert(alert_type="warning", visible=False)
+        self.python_guide = pn.pane.Markdown(PYTHON_GUIDE)
         self.python_output = pn.pane.Markdown()
 
         self._set_widget_descriptions()
@@ -2699,8 +2823,14 @@ print(result.mass_properties.table())
 print(result.buildup.table())
 print("trim alpha [deg] =", result.trim.alpha)
 print("pitch-control deflection [deg] =", result.trim.trim_deflection)
+print("lift coefficient =", result.trim.solution.CL)
+print("induced drag coefficient =", result.trim.solution.CD_i)
+print("total drag coefficient =", result.CD_total)
+print("total drag [N] =", result.drag)
 print("static margin =", result.trim.static_margin)
 print("L/D =", result.lift_to_drag)
+for warning in result.warnings:
+    print("WARNING:", warning)
 
 # Whole-aircraft aerodynamics: full station geometry for CL, CDi, and Cm;
 # local NeuralFoil cd(cl, Re) integrated over every surface strip, plus bodies.
@@ -3008,7 +3138,11 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
                 "### Derivative contributions", self.derivative_table,
                 self.mode_table, self.dynamics_plot,
             )),
-            ("Python", self.python_output),
+            ("Python", pn.Tabs(
+                ("Guide", self.python_guide),
+                ("Current project script", self.python_output),
+                dynamic=True,
+            )),
             dynamic=True,
         )
         sidebar = [

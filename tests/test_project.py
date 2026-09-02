@@ -23,6 +23,18 @@ def test_example_project_is_valid_and_multi_station():
     assert project.total_mass() == pytest.approx(0.8)
 
 
+def test_project_named_accessors_support_scripts_without_list_positions():
+    project = example_project()
+
+    assert project.surface_named("Main wing") is project.surfaces[0]
+    assert project.body_named(project.bodies[0].name) is project.bodies[0]
+    assert project.mass_named(project.masses[0].name) is project.masses[0]
+    assert project.propulsor_named("Propulsor 1") is project.propulsion.propulsors[0]
+    assert project.body_named("missing") is None
+    assert project.mass_named("missing") is None
+    assert project.propulsor_named("missing") is None
+
+
 def test_project_json_round_trip_preserves_nested_design():
     original = example_project()
     original.airfoils["custom"] = AirfoilDefinition.from_section(foil.naca4("4412"))
