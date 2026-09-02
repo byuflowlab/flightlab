@@ -2744,7 +2744,7 @@ print("empirical body increments =", dynamics.body_increments)
 print("propulsion derivatives =", dynamics.propulsion_increments)
 '''
         self.python_output.object = (
-            "Save the project beside your script or notebook, then use the same model directly. "
+            "Save the project beside your script, then use the same model directly. "
             "Physical configuration is read from the project; each call keeps the analysis request explicit.\n\n"
             f"```python\n{code}```"
         )

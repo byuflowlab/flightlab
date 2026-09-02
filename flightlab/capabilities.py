@@ -1,7 +1,7 @@
 """Discover what FlightLab can do before remembering function names.
 
-This module is deliberately data-first.  The notebook tour, command-line
-browser, and future web interface can all render the same topic records, so
+This module is deliberately data-first.  The command-line browser and browser
+workbench can render the same topic records, so
 their descriptions do not drift away from the Python API.
 """
 

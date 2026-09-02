@@ -29,7 +29,6 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
-notebook = ["jupyterlab>=4.0", "ipywidgets>=8.0"]
 workbench = ["panel>=1.9,<2", "pandas>=1.5"]
 
 [project.scripts]
@@ -55,19 +54,14 @@ flightlab = { path = ".", editable = true }
 [tool.pixi.environments]
 default = { solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
-notebook = { features = ["notebook"], solve-group = "default" }
 workbench = { features = ["workbench"], solve-group = "default" }
 
 [tool.pixi.tasks]
-notebook = "jupyter lab notebooks/01_flight_condition_and_drag.ipynb"
-reference = "jupyter lab notebooks/reference_toolbox.ipynb"
 workbench = "python -m flightlab workbench"
 test = "pytest tests"
 
 [tool.pixi.dependencies]
-python = ">=3.10,<3.14"
-jupyterlab = ">=4.6.3,<5"
-ipywidgets = ">=8.1.9,<9"
+python = ">=3.10"
 pytest = ">=9.1.1,<10"
 panel = ">=1.9.4,<2"
 pandas = ">=2.3.3,<3"

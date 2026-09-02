@@ -14,8 +14,8 @@ included because those are developed in class.
 
 FlightLab is a normal Python package. Use whichever environment manager you already have;
 the project does not require Pixi. Run the commands from the cloned repository directory
-that contains `pyproject.toml`. Python 3.10 through 3.13 is supported; the Pixi environment
-allows that range rather than pinning one minor release.
+that contains `pyproject.toml`. Python 3.10 or newer is supported; neither the package nor
+the Pixi environment sets an upper Python-version bound.
 
 ```bash
 git clone https://github.com/byuflowlab/flightlab.git
@@ -24,17 +24,15 @@ cd flightlab
 
 ### Pixi
 
-Pixi installs the package, notebook interface, and test tools from `pyproject.toml`:
+Pixi installs the package, browser workbench, and test tools from `pyproject.toml`:
 
 ```bash
 pixi install
 pixi run test
 pixi run workbench
-pixi run notebook
 ```
 
-`pixi run workbench` opens the general aircraft-design application. `pixi run notebook`
-opens the first guided notebook, and `pixi run reference` opens the complete toolbox catalog.
+`pixi run workbench` opens the general aircraft-design application.
 
 ### pip with a virtual environment
 
@@ -42,20 +40,18 @@ On macOS or Linux:
 
 ```bash
 python -m venv .venv
-.venv/bin/python -m pip install -e ".[dev,notebook,workbench]"
+.venv/bin/python -m pip install -e ".[dev,workbench]"
 .venv/bin/python -m pytest tests
 .venv/bin/python -m flightlab workbench
-.venv/bin/python -m jupyter lab notebooks/01_flight_condition_and_drag.ipynb
 ```
 
 On Windows PowerShell:
 
 ```powershell
 py -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev,notebook,workbench]"
+.venv\Scripts\python -m pip install -e ".[dev,workbench]"
 .venv\Scripts\python -m pytest tests
 .venv\Scripts\python -m flightlab workbench
-.venv\Scripts\python -m jupyter lab notebooks/01_flight_condition_and_drag.ipynb
 ```
 
 ### conda
@@ -63,12 +59,11 @@ py -m venv .venv
 Create and activate an environment, then install the local package with pip inside it:
 
 ```bash
-conda create -n flightlab python=3.12 pip
+conda create -n flightlab python pip
 conda activate flightlab
-python -m pip install -e ".[dev,notebook,workbench]"
+python -m pip install -e ".[dev,workbench]"
 python -m pytest tests
 python -m flightlab workbench
-python -m jupyter lab notebooks/01_flight_condition_and_drag.ipynb
 ```
 
 The editable install (`-e`) makes local package corrections available without reinstalling.
@@ -161,7 +156,7 @@ masses in the aircraft mass model when that option is enabled; multiple motor/ES
 share the selected battery and its total-current voltage sag.
 
 Use **Save project** to download a human-readable `.flightlab.json` file. The **Python** tab
-shows how to open that same file and reproduce the analysis in a script or notebook:
+shows how to open that same file and reproduce the analysis in a Python script:
 
 ```python
 from flightlab.project import AircraftProject
@@ -176,29 +171,9 @@ The current workbench is a preliminary-design tool, not a body-panel clone of XF
 enter through handbook drag, mass properties, and documented stability approximations; the
 VLM resolves lifting surfaces.
 
-## Learn the toolbox in stages
+## Discover the toolbox
 
-The `notebooks/` directory contains a sequence of guided lessons. They introduce analysis
-ideas one topic at a time; they are not the aircraft-project data model or the only available
-interface. Students can open the same saved project from ordinary Python as the course builds
-toward integrated design work.
-
-| Stage | Notebook | Main question |
-|---:|---|---|
-| 1 | `01_flight_condition_and_drag.ipynb` | What flight regime are we in, and where does parasite drag come from? |
-| 2 | `02_airfoil_analysis.ipynb` | How does a section change with Reynolds number and transition? |
-| 3 | `03_wing_design.ipynb` | How do span, taper, and twist affect loading and induced drag? |
-| 4 | `04_stability_and_trim.ipynb` | How do CG position and tail size affect trim and static margin? |
-| 5 | `05_complete_aircraft_drag.ipynb` | How do the drag contributions combine into a complete polar? |
-| 6 | `06_propulsion_matching.ipynb` | Where does a battery–motor–propeller combination actually operate? |
-| 7 | `07_aircraft_performance.ipynb` | How does the polar determine characteristic speeds and glide behavior? |
-| 8 | `08_loads_and_structures.ipynb` | How does the flight envelope become a wing bending load? |
-
-Start with the notebook that matches the current course topic; later notebooks assume ideas
-introduced earlier. `notebooks/reference_toolbox.ipynb` remains available as a searchable
-catalog, but it is not intended to be the first student experience.
-
-You can also discover capabilities without Jupyter. From a terminal:
+From a terminal:
 
 ```bash
 python -m flightlab
@@ -289,7 +264,6 @@ provided sweep helper.
 | `performance` | Characteristic speeds, climb, glide, ceiling, range, and endurance |
 | `loads` | V–n diagrams, gusts, span loads, inertial relief, spar sizing, deflection |
 | `plot` | Course plotting helpers; each accepts an optional Matplotlib `ax` |
-| `explorers` | Optional notebook mini GUIs and their generated Python |
 | `project`, `project_analysis` | Saved project aircraft and integrated design-point analyses |
 | `workbench` | Optional local browser interface for editing and analyzing a project |
 | `case`, `live` | Optional cached and interactive workflows for design exploration |

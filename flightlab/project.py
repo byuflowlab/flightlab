@@ -6,9 +6,9 @@ stations, bodies and mass items are editable rows, and several named flight
 conditions may belong to one aircraft.
 
 The JSON representation contains only ordinary numbers, strings, lists, and
-dictionaries.  It is intentionally independent of Panel, Jupyter, and the
-solver so the same project can be used by the workbench, notebooks, scripts,
-and future import/export adapters.
+dictionaries.  It is intentionally independent of Panel and the solver so the
+same project can be used by the workbench, scripts, and future import/export
+adapters.
 """
 
 from __future__ import annotations

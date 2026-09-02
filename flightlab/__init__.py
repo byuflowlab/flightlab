@@ -33,8 +33,6 @@ Submodules
     The ``Case`` object: parameters, cached analysis modes.
 ``flightlab.live``
     Slider-driven figures for design exploration.
-``flightlab.explorers``
-    Task-focused notebook interfaces that expose the Python behind each result.
 ``flightlab.project``
     Saved student aircraft: station geometry, bodies, masses, and flight cases.
 ``flightlab.project_analysis``
@@ -77,7 +75,7 @@ __all__ = [
     "atmos", "geom", "airfoil", "wing", "drag", "stability",
     "propulsion", "performance", "loads",
     # workflow
-    "case", "live", "cache", "capabilities", "explorers", "project",
+    "case", "live", "cache", "capabilities", "project",
     "project_analysis", "workbench",
     # data and solvers
     "vlm", "foil", "fleet", "props", "catalog", "plot", "ref",
@@ -104,7 +102,7 @@ def __getattr__(name: str):
     if name in {
         "atmos", "geom", "airfoil", "wing", "drag", "stability",
         "propulsion", "performance", "loads", "case", "live", "cache",
-        "capabilities", "explorers", "project", "project_analysis", "workbench",
+        "capabilities", "project", "project_analysis", "workbench",
         "vlm", "foil", "fleet", "props", "catalog", "plot", "ref",
     }:
         module = import_module(f".{name}", __name__)
