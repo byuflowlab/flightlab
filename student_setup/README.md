@@ -37,6 +37,14 @@ has promoted a new course build, the launcher downloads it automatically and
 leaves saved `.flightlab.json` project files alone. If the update check fails,
 an already-downloaded build can still start offline.
 
+## Homework notebooks and Colab
+
+The Colab link opens the public notebook directly from this GitHub repository;
+it does not upload a second copy maintained inside Colab. Google requires a
+Google-account sign-in to execute the notebook. Students should choose **File →
+Save a copy in Drive** before editing, or download the completed `.ipynb` file
+before closing the session. The HW1 notebook covers only Problem 1b.
+
 ## What the launchers do
 
 They install `uv` into a FlightLab-only folder in the student's user account.

@@ -40,3 +40,16 @@ def test_launchers_use_managed_python_and_the_controlled_release_channel():
         assert "flightlab[workbench]" in source
         assert "flightlab workbench" in source
         assert "FLIGHTLAB_TEST_ONLY" in source
+
+
+def test_hw1_notebook_is_limited_to_problem_1b():
+    notebook = json.loads((ROOT / "notebooks" / "hw1_starter.ipynb").read_text())
+    source = "\n".join("".join(cell.get("source", [])) for cell in notebook["cells"])
+
+    assert "## 2. Sweep the pod shape" in source
+    assert "## Problem 1a" not in source
+    assert "## Problem 2a" not in source
+    assert "## Problem 2b" not in source
+    assert "workbench_results" not in source
+    assert "brentq" not in source
+    assert "from flightlab import atmos" not in source

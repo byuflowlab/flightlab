@@ -23,9 +23,11 @@ The first launch downloads a private copy of Python and the course packages and 
 several minutes. Later launches reuse the installation and automatically check for the current
 tested course build. Saved `.flightlab.json` project files are not affected by updates.
 
-For Homework 1, [open the starter notebook in Google
+For Homework 1, sign into a Google account and [open the starter notebook in Google
 Colab](https://colab.research.google.com/github/byuflowlab/flightlab/blob/main/notebooks/hw1_starter.ipynb).
-The notebook installs the same tested course build in its temporary Colab runtime.
+The notebook covers only Problem 1b and installs the same tested course build in its temporary
+Colab runtime. Problem 1a remains entirely in the workbench; Problems 2a and 2b do not use
+FlightLab.
 
 See the [student setup and instructor release notes](student_setup/README.md) for troubleshooting
 and the weekly update procedure.
