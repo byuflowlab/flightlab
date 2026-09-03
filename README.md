@@ -1,19 +1,39 @@
 # `flightlab`
 
 `flightlab` is the student analysis package for BYU ME 415, Flight Vehicle Design. It
-contains the numerical tools, reference aircraft, and measured data used by the aircraft
-homework. The graded work is choosing a model and flight condition, checking the result,
-interpreting the physics, and making a design decision—not rebuilding these solvers.
+contains the numerical tools, reference aircraft, and measured data used in the aircraft
+homework and project. The graphical workbench is oriented only around RC aircraft design.
+A broader set of aircraft analysis and design capabilities exists in the python package.
 
 The package includes section aerodynamics, a vortex-lattice method, drag buildup, stability
 and trim, electric-propulsion matching, aircraft performance, flight loads, simple spar
-sizing, plotting helpers, and a small aircraft/component catalog. Rocket solvers are not
-included because those are developed in class.
+sizing, plotting helpers, and a small aircraft/component catalog.
 
-## Install once
+## Students: start here
 
-FlightLab is a normal Python package. Use whichever environment manager you already have;
-the project does not require Pixi. Run the commands from the cloned repository directory
+Students do not need to install Git, Python, or an environment manager.
+
+1. Download the launcher for [macOS](student_setup/downloads/FlightLab-macOS.zip) or
+   [Windows](student_setup/downloads/FlightLab-Windows.zip).
+2. Unzip it and read **START HERE**.
+3. Double-click **Start FlightLab** and keep its small launcher window open while the
+   workbench is running in the browser.
+
+The first launch downloads a private copy of Python and the course packages and can take
+several minutes. Later launches reuse the installation and automatically check for the current
+tested course build. Saved `.flightlab.json` project files are not affected by updates.
+
+For Homework 1, [open the starter notebook in Google
+Colab](https://colab.research.google.com/github/byuflowlab/flightlab/blob/main/notebooks/hw1_starter.ipynb).
+The notebook installs the same tested course build in its temporary Colab runtime.
+
+See the [student setup and instructor release notes](student_setup/README.md) for troubleshooting
+and the weekly update procedure.
+
+## Developer and advanced local installation
+
+FlightLab is a normal Python package. Use whichever environment manager you already have.
+Run the commands from the cloned repository directory
 that contains `pyproject.toml`. Python 3.10 or newer is supported; neither the package nor
 the Pixi environment sets an upper Python-version bound.
 
@@ -105,25 +125,12 @@ It opens locally in a browser. No FlightLab server or account is involved. A pro
 
 The **Analysis** tab runs mass and CG, full-station VLM, longitudinal trim, lifting-surface
 neutral point, and component profile/body drag as one design point. It also plots the aircraft
-lift curve, drag polar, lift-to-drag ratio, pitching moment, and span loading. Completed flight
-cases are cached until the project or panel resolution changes, which deletes the cached cases.
-The summary metrics report CL and total CD explicitly. Every horizontal surface's loading is
-shown; each surface marked as a wing is compared with an ellipse carrying that surface's same
-integrated lift. A separate stall view compares each strip's local section cl with the
-airfoil clmax at its local Reynolds number and estimates the aircraft CL/angle where the first
-strip reaches its limit. The VLM retains
-every surface station. Lifting-surface profile drag integrates each strip's local chord,
-Reynolds number, lift coefficient, and interpolated station airfoils; bodies use documented
-empirical correlations. Separate **Propulsion** and **Dynamic stability** tabs expose the
+lift curve, drag polar, lift-to-drag ratio, pitching moment, and span loading.
+Separate **Propulsion** and **Dynamic stability** tabs expose the
 electric-chain match, efficiency and power curves, and longitudinal/lateral eigenmodes.
 The aircraft view marks CG independently of optional numbered mass-component markers, shows
 3D/planform/side/front views, draws each propeller at its specified disk diameter, and can
-overlay the lifting-surface panel mesh used by the current discretization controls. Table
-headers and the principal analysis controls provide hover help. Four-digit NACA sections can
-be generated directly in the Airfoils tab; NACA 0009 is included in the initial selectors.
-The Lifting surfaces tab has a mass-free, selected-surface panel preview (including vertical
-tails), while the Mass tab has dedicated planform and side views keyed to the numbered mass
-rows and CG marker.
+overlay the lifting-surface panel mesh used by the current discretization controls.
 Airfoil curves, the Analysis polar and spanwise solution, the Propulsion speed sweep, and the
 Loads span-load/deflection solution can be downloaded as unit-labeled CSV files for
 calculations and plots beyond the workbench. Propulsion sweep limits and point count are

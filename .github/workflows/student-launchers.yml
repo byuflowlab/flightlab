@@ -1,0 +1,50 @@
+name: Student launcher smoke tests
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/student-launchers.yml"
+      - "student_setup/build_downloads.sh"
+      - "student_setup/macos/**"
+      - "student_setup/windows/**"
+  pull_request:
+    paths:
+      - ".github/workflows/student-launchers.yml"
+      - "student_setup/build_downloads.sh"
+      - "student_setup/macos/**"
+      - "student_setup/windows/**"
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS launcher
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the student launcher
+        env:
+          FLIGHTLAB_TEST_ONLY: "1"
+          XDG_DATA_HOME: ${{ runner.temp }}/flightlab-student-test
+        run: ./student_setup/macos/Start\ FlightLab.command
+      - name: Build and inspect student downloads
+        run: |
+          ./student_setup/build_downloads.sh
+          unzip -t student_setup/downloads/FlightLab-macOS.zip
+          unzip -t student_setup/downloads/FlightLab-Windows.zip
+
+  windows:
+    name: Windows launcher
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the student launcher
+        shell: cmd
+        env:
+          FLIGHTLAB_TEST_ONLY: "1"
+          LOCALAPPDATA: ${{ runner.temp }}\flightlab-student-test
+        run: call "student_setup\windows\Start FlightLab.cmd"

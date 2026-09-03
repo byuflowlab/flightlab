@@ -1,0 +1,13 @@
+FLIGHTLAB FOR WINDOWS
+
+1. Double-click "Start FlightLab.cmd".
+2. Keep the launcher window open while you use FlightLab in your browser.
+3. Close the launcher window when you are finished.
+
+The first launch needs internet access and may take several minutes. Later
+launches are faster. FlightLab checks for course updates automatically.
+
+If Windows SmartScreen appears, choose More info, verify that the file came
+from the ME 415 course, and choose Run anyway.
+
+If setup fails, take a screenshot of the launcher window and send it to your TA.
