@@ -300,6 +300,8 @@ def test_workbench_naca_generation_and_natural_transition_controls():
 def test_flight_case_edits_do_not_redraw_case_independent_figures(monkeypatch):
     workbench = Workbench()
     old_body_re = float(workbench.body_results.value.loc[0, "Re"])
+    table_events = []
+    workbench.case_table.param.watch(lambda event: table_events.append(event), "value")
 
     def unexpected_refresh():
         raise AssertionError("a flight-case edit redrew case-independent figures")
@@ -313,4 +315,6 @@ def test_flight_case_edits_do_not_redraw_case_independent_figures(monkeypatch):
     assert workbench.project.cases[0].speed == pytest.approx(frame.loc[0, "speed"])
     assert float(workbench.body_results.value.loc[0, "Re"]) > old_body_re
     assert workbench.status.object == "Flight cases updated."
+    # One event is the edit itself; a second would be a disruptive full-table reload.
+    assert len(table_events) == 1
     plt.close("all")

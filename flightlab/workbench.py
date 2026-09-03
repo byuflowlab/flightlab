@@ -1388,19 +1388,28 @@ class Workbench:
             ]
             rows = _coerce_records(event.new, schema, "Flight case")
             cases = []
+            normalize_transition_columns = False
             for row in rows:
                 transition = row.pop("transition").lower()
                 if transition not in {"natural", "forced"}:
                     raise ValueError("transition must be 'natural' or 'forced'")
                 if transition == "natural":
+                    normalize_transition_columns |= (
+                        row["xtr_upper"] != 1.0 or row["xtr_lower"] != 1.0
+                    )
                     row["xtr_upper"] = row["xtr_lower"] = 1.0
                 cases.append(FlightCase(**row))
             self.project.cases = cases
             names = [case.name for case in self.project.cases]
             self._updating = True
-            self.case_table.value = pd.DataFrame([
-                self._case_record(case) for case in self.project.cases
-            ])
+            # Do not replace the complete browser-side table after an ordinary
+            # cell edit. That reload interrupts keyboard focus and makes a
+            # millisecond-scale server callback feel slow. Only send a new
+            # frame when choosing natural transition actually normalizes x/c.
+            if normalize_transition_columns:
+                self.case_table.value = pd.DataFrame([
+                    self._case_record(case) for case in self.project.cases
+                ])
             self.analysis_case.options = names
             if self.analysis_case.value not in names:
                 self.analysis_case.value = names[0] if names else None
