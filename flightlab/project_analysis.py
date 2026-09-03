@@ -565,7 +565,7 @@ def run_design_point(
     )
 
 
-def _surface_strip_profile(project, surface, solution, case):
+def _surface_strip_profile(project, surface, solution, case, section_tables=None):
     """Return a drag.Row from local section data over one VLM surface."""
     view = solution.surface(surface.name)
     ds_one = view.ds / (2.0 if surface.symmetric else 1.0)
@@ -585,8 +585,16 @@ def _surface_strip_profile(project, surface, solution, case):
         left_section = project.section(left.airfoil)
         right_section = project.section(right.airfoil)
         options = dict(n_crit=case.n_crit, xtr_upper=case.xtr_upper, xtr_lower=case.xtr_lower)
-        left_table = airfoil.table(left_section, Re=re_range, **options)
-        right_table = airfoil.table(right_section, Re=re_range, **options)
+        left_table = (
+            section_tables[left.airfoil]
+            if section_tables is not None and left.airfoil in section_tables
+            else airfoil.table(left_section, Re=re_range, **options)
+        )
+        right_table = (
+            section_tables[right.airfoil]
+            if section_tables is not None and right.airfoil in section_tables
+            else airfoil.table(right_section, Re=re_range, **options)
+        )
         wl = 1.0 - blend[mask]
         wr = blend[mask]
         cd[mask] = wl * left_table.cd(view.cl[mask], view.Re[mask]) + wr * right_table.cd(view.cl[mask], view.Re[mask])
@@ -648,7 +656,7 @@ def surface_section_cl_max(
     return cl_max
 
 
-def _unloaded_surface_profile(project, surface, case):
+def _unloaded_surface_profile(project, surface, case, section_tables=None):
     """Profile-drag row for a surface omitted from the longitudinal VLM, e.g. a fin."""
     air = atmos.at(case.altitude)
     f = swet = re_weight = area_weight = 0.0
@@ -662,8 +670,16 @@ def _unloaded_surface_profile(project, surface, case):
             re_range = (max(1e4, 0.7 * re), 1.3 * re)
             ls, rs = project.section(left.airfoil), project.section(right.airfoil)
             options = dict(n_crit=case.n_crit, xtr_upper=case.xtr_upper, xtr_lower=case.xtr_lower)
-            lt = airfoil.table(ls, Re=re_range, **options)
-            rt = airfoil.table(rs, Re=re_range, **options)
+            lt = (
+                section_tables[left.airfoil]
+                if section_tables is not None and left.airfoil in section_tables
+                else airfoil.table(ls, Re=re_range, **options)
+            )
+            rt = (
+                section_tables[right.airfoil]
+                if section_tables is not None and right.airfoil in section_tables
+                else airfoil.table(rs, Re=re_range, **options)
+            )
             cd = (1.0 - xi) * float(lt.cd(0.0, re)) + xi * float(rt.cd(0.0, re))
             perimeter = (
                 (1.0 - xi) * project._section_properties(ls)[3]
@@ -686,6 +702,8 @@ def profile_drag_buildup(
     project: AircraftProject,
     solution: wing.Solution,
     case: Optional[FlightCase] = None,
+    *,
+    section_tables=None,
 ) -> ProjectDragBuildup:
     """Station-resolved lifting-surface profile drag plus empirical body drag."""
     case = project.case() if case is None else case
@@ -697,9 +715,13 @@ def profile_drag_buildup(
     rows = []
     for surface in project.surfaces:
         if surface.name in solution.surfaces:
-            rows.append(_surface_strip_profile(project, surface, solution, case))
+            rows.append(_surface_strip_profile(
+                project, surface, solution, case, section_tables=section_tables
+            ))
         else:
-            rows.append(_unloaded_surface_profile(project, surface, case))
+            rows.append(_unloaded_surface_profile(
+                project, surface, case, section_tables=section_tables
+            ))
     rows.extend(row for row in handbook.rows if row.name in body_names)
     return ProjectDragBuildup(
         rows=tuple(rows), S_ref=project.reference_quantities()[0],
@@ -708,6 +730,46 @@ def profile_drag_buildup(
         altitude=case.altitude, mach=float(atmos.at(case.altitude).mach(case.speed)),
         skipped=handbook.skipped,
     )
+
+
+def _propulsion_profile_tables(project, case, speed):
+    """Build each section polar once across a complete propulsion sweep.
+
+    The ordinary design-point path deliberately tailors a small Reynolds grid
+    to each surface interval.  Repeating that for every sweep speed launches
+    NeuralFoil dozens of times.  A propulsion sweep instead uses one shared,
+    sufficiently wide Reynolds grid per airfoil and reuses it at every speed.
+    """
+    values = np.atleast_1d(np.asarray(speed, dtype=float))
+    positive = values[values > 0.0]
+    if positive.size == 0:
+        raise ValueError("propulsion sweep speeds must be positive")
+    chords = [
+        station.chord
+        for surface in project.surfaces
+        for station in surface.stations
+        if station.chord > 0.0
+    ]
+    if not chords:
+        return {}
+    air = atmos.at(case.altitude)
+    re_min = max(1e4, 0.7 * float(air.reynolds(float(np.min(positive)), min(chords))))
+    re_max = 1.3 * float(air.reynolds(float(np.max(positive)), max(chords)))
+    options = dict(
+        n_Re=24,
+        n_crit=case.n_crit,
+        xtr_upper=case.xtr_upper,
+        xtr_lower=case.xtr_lower,
+    )
+    names = {
+        station.airfoil
+        for surface in project.surfaces
+        for station in surface.stations
+    }
+    return {
+        name: airfoil.table(project.section(name), Re=(re_min, re_max), **options)
+        for name in names
+    }
 
 
 def aircraft_polar(
@@ -936,25 +998,40 @@ def analyze_propulsion(
         speed = np.linspace(max(1.0, 0.45 * case.speed), 1.8 * case.speed, 19)
     speed = np.asarray(speed, dtype=float)
     points = tuple(_propulsion_system_point(project, case, value) for value in speed)
-    at_case = _propulsion_system_point(project, case, case.speed)
+    matching_case = np.flatnonzero(np.isclose(speed, case.speed, rtol=0.0, atol=1e-12))
+    at_case = (
+        points[int(matching_case[0])]
+        if matching_case.size
+        else _propulsion_system_point(project, case, case.speed)
+    )
     mp = stability.mass_properties(project.components())
     air = atmos.at(case.altitude)
     S = project.reference_quantities()[0]
-    design = run_design_point(project, case)
-    zero = analyze(project, case, alpha=0.0, trim_deflection=design.trim.trim_deflection, x_ref=mp.x_cg)
-    one = analyze(project, case, alpha=1.0, trim_deflection=design.trim.trim_deflection, x_ref=mp.x_cg)
-    cl_per_degree = one.CL - zero.CL
-    drag_required = []
+    trimmed = trim(project, case)
+    slope_point = analyze(
+        project, case, alpha=trimmed.alpha + 1.0,
+        trim_deflection=trimmed.trim_deflection, x_ref=mp.x_cg,
+    )
+    cl_per_degree = slope_point.CL - trimmed.solution.CL
+    solutions = []
+    local_cases = []
     for value in speed:
         q = air.q(float(value))
         cl = case.load_factor * mp.mass * G0 / (q * S)
-        alpha = (cl - zero.CL) / cl_per_degree
+        alpha = trimmed.alpha + (cl - trimmed.solution.CL) / cl_per_degree
         local_case = replace(case, speed=float(value))
-        solution = analyze(
+        local_cases.append(local_case)
+        solutions.append(analyze(
             project, local_case, alpha=alpha,
-            trim_deflection=design.trim.trim_deflection, x_ref=mp.x_cg,
+            trim_deflection=trimmed.trim_deflection, x_ref=mp.x_cg,
+        ))
+    section_tables = _propulsion_profile_tables(project, case, speed)
+    drag_required = []
+    for value, local_case, solution in zip(speed, local_cases, solutions):
+        q = air.q(float(value))
+        buildup = profile_drag_buildup(
+            project, solution, local_case, section_tables=section_tables
         )
-        buildup = profile_drag_buildup(project, solution, local_case)
         cd = buildup.CD_profile_body + solution.CD_i
         drag_required.append(cd * q * S)
     warnings = []

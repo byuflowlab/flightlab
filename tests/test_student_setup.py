@@ -3,6 +3,10 @@
 import json
 from pathlib import Path
 import re
+import sys
+from types import SimpleNamespace
+
+from flightlab.__main__ import launch_workbench
 
 
 ROOT = Path(__file__).parents[1]
@@ -40,6 +44,22 @@ def test_launchers_use_managed_python_and_the_controlled_release_channel():
         assert "flightlab[workbench]" in source
         assert "flightlab workbench" in source
         assert "FLIGHTLAB_TEST_ONLY" in source
+
+
+def test_workbench_launch_reports_the_silent_import_phase(monkeypatch, capsys):
+    served = {}
+    fake_panel = SimpleNamespace(
+        serve=lambda app, **kwargs: served.update(app=app, kwargs=kwargs)
+    )
+    fake_workbench = SimpleNamespace(create_workbench=object())
+    monkeypatch.setitem(sys.modules, "panel", fake_panel)
+    monkeypatch.setitem(sys.modules, "flightlab.workbench", fake_workbench)
+
+    launch_workbench(["--no-open"])
+
+    assert "Preparing FlightLab (loading scientific libraries)..." in capsys.readouterr().out
+    assert served["app"] is fake_workbench.create_workbench
+    assert served["kwargs"]["show"] is False
 
 
 def test_hw1_notebook_is_limited_to_problem_1b():

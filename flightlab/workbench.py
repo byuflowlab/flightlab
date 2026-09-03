@@ -881,6 +881,17 @@ class Workbench:
         self.status.object = message
         self.status.alert_type = "light"
 
+    def _refresh_after_flight_cases(self, message="Flight cases updated."):
+        """Refresh only views whose values actually depend on a flight case."""
+        deleted_cached_cases = self._invalidate_export_results()
+        self._refresh_validation()
+        self._refresh_body_results()
+        self._refresh_generated_python()
+        if deleted_cached_cases:
+            message += " All cached flight-case results were deleted."
+        self.status.object = message
+        self.status.alert_type = "light"
+
     def _analysis_inputs_changed(self, _):
         if self._updating:
             return
@@ -1397,7 +1408,7 @@ class Workbench:
             if self.loads_case.value not in names:
                 self.loads_case.value = names[0] if names else None
             self._updating = False
-            self._refresh_all("Flight cases updated.")
+            self._refresh_after_flight_cases()
         except Exception as exc:
             self._error(f"Flight-case edit is incomplete: {exc}")
 
@@ -2168,6 +2179,10 @@ class Workbench:
         except Exception as exc:
             self.mass_summary.object = f"Mass result unavailable: {escape(str(exc))}"
             self.mass_results.value = pd.DataFrame([{"result": f"Unavailable: {exc}"}])
+        self._refresh_body_results()
+
+    def _refresh_body_results(self):
+        """Update the case-dependent body table without redrawing mass views."""
         try:
             case = self.project.case()
             buildup = drag.buildup(

@@ -295,3 +295,22 @@ def test_workbench_naca_generation_and_natural_transition_controls():
     assert workbench.project.cases[0].xtr_lower == pytest.approx(1.0)
     assert workbench.case_table.value.loc[0, "xtr_upper"] == pytest.approx(1.0)
     plt.close("all")
+
+
+def test_flight_case_edits_do_not_redraw_case_independent_figures(monkeypatch):
+    workbench = Workbench()
+    old_body_re = float(workbench.body_results.value.loc[0, "Re"])
+
+    def unexpected_refresh():
+        raise AssertionError("a flight-case edit redrew case-independent figures")
+
+    monkeypatch.setattr(workbench, "_refresh_geometry", unexpected_refresh)
+    monkeypatch.setattr(workbench, "_refresh_component_summaries", unexpected_refresh)
+    frame = workbench.case_table.value.copy()
+    frame.loc[0, "speed"] *= 1.1
+    workbench.case_table.value = frame
+
+    assert workbench.project.cases[0].speed == pytest.approx(frame.loc[0, "speed"])
+    assert float(workbench.body_results.value.loc[0, "Re"]) > old_body_re
+    assert workbench.status.object == "Flight cases updated."
+    plt.close("all")

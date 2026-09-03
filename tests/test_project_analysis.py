@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from flightlab import loads, stability
+from flightlab import airfoil, loads, stability
 from flightlab.project import PropulsorSetup, example_project
 from flightlab.project_analysis import (
     TrimNotPossibleError,
@@ -124,6 +124,27 @@ def test_propulsion_and_dynamic_stability_are_project_analyses():
     assert modes.body_increments["Cm_alpha"] > 0
     assert modes.body_increments["Cn_beta"] != 0
     assert modes.propulsion_increments.dT_dV < 0
+
+
+def test_propulsion_sweep_builds_each_airfoil_table_only_once(monkeypatch):
+    project = example_project()
+    original = airfoil.table
+    calls = []
+
+    def counted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original(*args, **kwargs)
+
+    airfoil.clear_cache()
+    monkeypatch.setattr(airfoil, "table", counted)
+    analyze_propulsion(project, speed=[8.0, 12.0, 16.0])
+
+    airfoil_names = {
+        station.airfoil
+        for surface in project.surfaces
+        for station in surface.stations
+    }
+    assert len(calls) == len(airfoil_names)
 
 
 def test_multiple_propulsors_share_one_sagging_battery_bus():

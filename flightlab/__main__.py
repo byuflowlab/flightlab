@@ -35,6 +35,11 @@ def launch_workbench(argv=None) -> None:
     parser.add_argument("--port", type=int, default=0, help="local port; 0 chooses an available port")
     parser.add_argument("--no-open", action="store_true", help="start the server without opening a browser")
     args = parser.parse_args(argv)
+    # ``uv tool run`` reports package installation before it hands control to
+    # FlightLab.  Importing Panel, matplotlib, and the numerical workbench can
+    # then take a while on student hardware, so make that otherwise-silent gap
+    # explicit in the launcher window.
+    print("Preparing FlightLab (loading scientific libraries)...", flush=True)
     try:
         import panel as pn
     except ImportError as exc:
