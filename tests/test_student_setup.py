@@ -42,7 +42,8 @@ def test_launchers_use_managed_python_and_the_controlled_release_channel():
         assert "student_setup/release.txt" in source
         assert "--python 3.12" in source
         assert "flightlab[workbench]" in source
-        assert "flightlab workbench" in source
+        assert "python -m flightlab workbench" in source
+        assert source.count("python -m flightlab") == 2
         assert "FLIGHTLAB_TEST_ONLY" in source
 
 

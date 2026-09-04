@@ -76,13 +76,13 @@ if [[ "${FLIGHTLAB_TEST_ONLY}" == "1" ]]; then
         "${FLIGHTLAB_NETWORK_OPTIONS[@]}" \
         --python 3.12 \
         --from "${FLIGHTLAB_REQUIREMENT}" \
-        flightlab
+        python -m flightlab
 else
     "${FLIGHTLAB_UV}" tool run \
         "${FLIGHTLAB_NETWORK_OPTIONS[@]}" \
         --python 3.12 \
         --from "${FLIGHTLAB_REQUIREMENT}" \
-        flightlab workbench
+        python -m flightlab workbench
 fi
 
 FLIGHTLAB_STATUS=$?

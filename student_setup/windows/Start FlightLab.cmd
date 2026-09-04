@@ -56,9 +56,9 @@ echo Close this window, or press Control-C, when you are finished.
 echo.
 
 if "%FLIGHTLAB_TEST_ONLY%"=="1" (
-    "%FLIGHTLAB_UV%" tool run %FLIGHTLAB_NETWORK_OPTIONS% --python 3.12 --from "%FLIGHTLAB_REQUIREMENT%" flightlab
+    "%FLIGHTLAB_UV%" tool run %FLIGHTLAB_NETWORK_OPTIONS% --python 3.12 --from "%FLIGHTLAB_REQUIREMENT%" python -m flightlab
 ) else (
-    "%FLIGHTLAB_UV%" tool run %FLIGHTLAB_NETWORK_OPTIONS% --python 3.12 --from "%FLIGHTLAB_REQUIREMENT%" flightlab workbench
+    "%FLIGHTLAB_UV%" tool run %FLIGHTLAB_NETWORK_OPTIONS% --python 3.12 --from "%FLIGHTLAB_REQUIREMENT%" python -m flightlab workbench
 )
 if errorlevel 1 goto run_error
 exit /b 0
