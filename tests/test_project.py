@@ -149,3 +149,28 @@ def test_shared_battery_and_multiple_propulsors_supply_positioned_masses():
     ]
     assert components["Left propulsor hardware"].y == pytest.approx(-0.30)
     assert components["Right propulsor hardware"].y == pytest.approx(0.30)
+
+
+def test_a_centerline_surface_must_not_be_mirrored():
+    from flightlab.project import blank_project
+
+    project = blank_project()
+    project.surfaces[2].symmetric = True
+    errors = [issue.message for issue in project.validate() if issue.level == "error"]
+    assert any("must not be mirrored" in message for message in errors)
+    project.surfaces[2].symmetric = False
+    assert not [issue for issue in project.validate() if issue.level == "error"]
+
+
+def test_incompatible_project_files_are_refused_with_a_plain_message():
+    from flightlab.project import FORMAT_VERSION, blank_project
+
+    data = blank_project().to_dict()
+    assert AircraftProject.from_dict(data).format_version == FORMAT_VERSION
+
+    with pytest.raises(ValueError, match=r"uses FlightLab format 99.*reads format"):
+        AircraftProject.from_dict({**data, "format_version": 99})
+
+    del data["surfaces"][0]["orientation"]
+    with pytest.raises(ValueError, match="missing or misnames a required field.*orientation"):
+        AircraftProject.from_dict(data)

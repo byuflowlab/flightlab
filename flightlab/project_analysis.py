@@ -216,16 +216,39 @@ class DynamicStability:
     warnings: Tuple[str, ...] = ()
 
 
-def _station_dihedral(surface: LiftingSurface) -> np.ndarray:
-    """Rotate vertical-surface sections into the x-y plane.
+CENTERLINE_TOLERANCE = 1e-9
 
-    Horizontal-surface dihedral is already present in the stations' y/z path;
-    rotating their absolute coordinates again would double-count it.
+
+def _station_dihedral(surface: LiftingSurface) -> np.ndarray:
+    """Local dihedral angle of every station, from the surface's own y/z path.
+
+    Each section is rotated about the surface's local spanwise axis, as AVL
+    does, so twist, camber, and control deflection act normal to the surface
+    whether it is a flat wing, a fin, or a V-tail.  The descriptive
+    ``orientation`` label plays no part.  Angles are folded into
+    ``[-pi/2, pi/2]`` so a surface whose stations run toward negative ``y``
+    keeps the same "up" direction as its mirror image.
     """
-    n = len(surface.stations)
-    if surface.orientation == "vertical":
-        return np.full(n, np.pi / 2.0)
-    return np.zeros(n)
+    stations = surface.stations
+    n = len(stations)
+    if n < 2:
+        return np.zeros(n)
+    dy = np.diff([station.y for station in stations])
+    dz = np.diff([station.z for station in stations])
+    flip = np.where(dy < -CENTERLINE_TOLERANCE, -1.0, 1.0)
+    segment = np.arctan2(dz * flip, dy * flip)
+    # Interior stations use the circular mean of their two adjacent segments.
+    unit = np.stack((np.cos(segment), np.sin(segment)))
+    inner = unit[:, :-1] + unit[:, 1:]
+    angles = np.concatenate((
+        segment[:1], np.arctan2(inner[1], inner[0]), segment[-1:],
+    ))
+    return angles
+
+
+def surface_on_centerline(surface: LiftingSurface) -> bool:
+    """True when every station lies in the aircraft's plane of symmetry."""
+    return all(abs(station.y) <= CENTERLINE_TOLERANCE for station in surface.stations)
 
 
 def _grid_for_surface(
@@ -250,13 +273,21 @@ def _grid_for_surface(
             return camber_line
 
         camber = [deflected(base) for base in camber]
+    # ``wing_to_grid`` rotates the leading-edge point together with the section,
+    # which suits a wing defined in its own frame.  Project stations are
+    # absolute body coordinates, so pre-rotate them the other way; the leading
+    # edges land exactly where the student entered them and only the section
+    # (chord, twist, camber, control deflection) turns with the local dihedral.
+    phi = _station_dihedral(surface)
+    y = np.array([station.y for station in stations])
+    z = np.array([station.z for station in stations])
     return wing_to_grid(
         xle=[station.x_le for station in stations],
-        yle=[station.y for station in stations],
-        zle=[station.z for station in stations],
+        yle=y * np.cos(phi) + z * np.sin(phi),
+        zle=-y * np.sin(phi) + z * np.cos(phi),
         chord=[station.chord for station in stations],
         theta=np.radians([station.twist_deg + incidence_offset for station in stations]),
-        phi=_station_dihedral(surface),
+        phi=phi,
         ns=ns,
         nc=nc,
         fc=camber,
@@ -267,12 +298,24 @@ def _grid_for_surface(
 
 
 def _longitudinal_surfaces(project: AircraftProject) -> List[LiftingSurface]:
-    surfaces = list(project.horizontal_surfaces)
-    if any(not surface.symmetric for surface in surfaces):
-        raise ValueError(
-            "the longitudinal prototype requires horizontal surfaces to be symmetric; "
-            "asymmetric and lateral cases will be added separately"
-        )
+    """Surfaces panelled by the symmetric (alpha-only) vortex-lattice solve.
+
+    Every mirrored surface enters, whatever its ``orientation`` label: wings,
+    tails, canards, V-tails, and twin fins are all meshed from their stations.
+    A surface lying in the plane of symmetry (a single centerline fin) carries
+    no load in symmetric flight, so it is left out of the lattice and its
+    profile drag is added from the zero-lift section polar instead.
+    """
+    surfaces = []
+    for surface in project.surfaces:
+        if surface.symmetric:
+            surfaces.append(surface)
+        elif not surface_on_centerline(surface):
+            raise ValueError(
+                f"{surface.name}: the symmetric longitudinal solve needs every surface either "
+                "mirrored across the centerline or lying on it; asymmetric configurations "
+                "will be added separately"
+            )
     return surfaces
 
 
@@ -396,7 +439,7 @@ def analyze(
     nc: int = 4,
     x_ref: Optional[float] = None,
 ) -> wing.Solution:
-    """Analyze all horizontal lifting surfaces using their full station geometry."""
+    """Analyze every mirrored lifting surface using its full station geometry."""
     case = project.case() if case is None else case
     alpha = case.alpha_deg if alpha is None else float(alpha)
     system, _, names, x_ref = _solve_system(
@@ -657,7 +700,7 @@ def surface_section_cl_max(
 
 
 def _unloaded_surface_profile(project, surface, case, section_tables=None):
-    """Profile-drag row for a surface omitted from the longitudinal VLM, e.g. a fin."""
+    """Profile-drag row for a surface omitted from the longitudinal VLM: a centerline fin."""
     air = atmos.at(case.altitude)
     f = swet = re_weight = area_weight = 0.0
     notes = []

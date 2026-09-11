@@ -84,7 +84,7 @@ class LiftingSurface:
     """
 
     name: str
-    orientation: str
+    orientation: str  # "horizontal" or "vertical": a descriptive label for handbook models and eligibility rules
     purpose: str
     trim_control: str
     symmetric: bool
@@ -715,6 +715,11 @@ class AircraftProject:
                 issues.append(ProjectIssue("error", f"{surface.name}: every chord must be positive"))
             if np.any(surface.path_lengths() <= 0):
                 issues.append(ProjectIssue("error", f"{surface.name}: consecutive stations must be distinct"))
+            if surface.symmetric and all(abs(station.y) <= 1e-9 for station in surface.stations):
+                issues.append(ProjectIssue(
+                    "error",
+                    f"{surface.name}: a surface lying on the centerline must not be mirrored across it",
+                ))
             for station in surface.stations:
                 try:
                     self.section(station.airfoil)
@@ -925,6 +930,30 @@ class AircraftProject:
 
     @classmethod
     def from_dict(cls, data: dict) -> "AircraftProject":
+        """Build a project from saved JSON data.
+
+        Files saved by another format version are refused with a message that
+        says so; a file with a missing or renamed field names that field
+        instead of surfacing a bare ``KeyError``.
+        """
+        version = data.get("format_version", FORMAT_VERSION)
+        if version != FORMAT_VERSION:
+            raise ValueError(
+                f"this project file uses FlightLab format {version}, but this FlightLab "
+                f"reads format {FORMAT_VERSION}. Re-create the design in the current "
+                "workbench, or open the file with the FlightLab version that saved it."
+            )
+        try:
+            return cls._from_current_format(data)
+        except (KeyError, TypeError) as exc:
+            detail = exc.args[0] if isinstance(exc, KeyError) else exc
+            raise ValueError(
+                f"this project file is missing or misnames a required field ({detail}); "
+                "it may have been edited by hand or saved by a different FlightLab version"
+            ) from exc
+
+    @classmethod
+    def _from_current_format(cls, data: dict) -> "AircraftProject":
         return cls(
             name=data["name"],
             surfaces=[

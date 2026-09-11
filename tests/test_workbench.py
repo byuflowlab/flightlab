@@ -318,3 +318,90 @@ def test_flight_case_edits_do_not_redraw_case_independent_figures(monkeypatch):
     # One event is the edit itself; a second would be a disruptive full-table reload.
     assert len(table_events) == 1
     plt.close("all")
+
+
+def test_geometry_edit_removes_stale_results_from_every_results_tab():
+    workbench = Workbench()
+    workbench.run_integrated_analysis()
+    workbench.run_propulsion_analysis()
+    workbench.run_dynamic_stability()
+    workbench.run_loads_analysis()
+    assert workbench.analysis_metrics.object and workbench.analysis_plots.object is not None
+    assert workbench.propulsion_plot.object is not None
+    assert workbench.dynamics_plot.object is not None
+    assert workbench.loads_plots.object is not None
+
+    frame = workbench.station_table.value.copy()
+    frame.loc[len(frame) - 1, "chord"] *= 0.9
+    workbench.station_table.value = frame
+
+    assert workbench._analysis_cache == {}
+    assert workbench.analysis_metrics.object == ""
+    assert workbench.analysis_plots.object is None
+    assert workbench.analysis_warnings.visible
+    assert "removed" in workbench.analysis_warnings.object.lower()
+    assert workbench.propulsion_plot.object is None and workbench.propulsion_metrics.object == ""
+    assert workbench.dynamics_plot.object is None and workbench.mode_table.value.empty
+    assert workbench.loads_plots.object is None and workbench.loads_metrics.object == ""
+    # Nothing to warn about until something was actually computed.
+    fresh = Workbench()
+    assert not fresh.analysis_warnings.visible
+    assert not fresh.loads_warnings.visible
+    plt.close("all")
+
+
+def test_case_and_load_input_changes_clear_the_results_that_depend_on_them():
+    workbench = Workbench()
+    workbench.run_propulsion_analysis()
+    workbench.run_dynamic_stability()
+    workbench.run_loads_analysis()
+    workbench.analysis_case.value = "Takeoff"
+    assert workbench.propulsion_plot.object is None
+    assert workbench.dynamics_plot.object is None
+    assert "flight case changed" in workbench.propulsion_warnings.object.lower()
+    # Loads are keyed to their own case selector and were not touched.
+    assert workbench.loads_plots.object is not None
+    workbench.loads_factor.value += 1.0
+    assert workbench.loads_plots.object is None and workbench.loads_metrics.object == ""
+    plt.close("all")
+
+
+def test_the_same_project_file_can_be_reopened_after_a_starter_design(monkeypatch):
+    workbench = Workbench()
+    cleared = []
+    monkeypatch.setattr(workbench.project_upload, "clear", lambda: cleared.append(True))
+    payload = workbench.project.to_json().encode("utf-8")
+    workbench.project_upload.value = payload
+    assert workbench.project.name == "Three-panel demonstrator"
+    workbench.blank_button.clicks += 1
+    assert workbench.project.name == "Untitled aircraft"
+    # Each load resets the browser-side chooser, so picking the same file
+    # again is reported as a change; the browser then sends an empty value
+    # followed by the file bytes.
+    assert cleared
+    workbench.project_upload.value = None
+    workbench.project_upload.value = payload
+    assert workbench.project.name == "Three-panel demonstrator"
+    plt.close("all")
+
+
+def test_added_stations_continue_along_the_surface():
+    workbench = Workbench()
+    workbench.surface_select.value = "Vertical tail"
+    fin = workbench._current_surface()
+    before = fin.stations[-1]
+    workbench._add_station(None)
+    after = fin.stations[-1]
+    assert after.z > before.z and after.y == pytest.approx(before.y)
+    workbench.surface_select.value = "Main wing"
+    wing = workbench._current_surface()
+    before = wing.stations[-1]
+    workbench._add_station(None)
+    after = wing.stations[-1]
+    assert after.y > before.y
+    # The dihedral wing keeps climbing at the angle of its last panel.
+    previous = wing.stations[-3]
+    assert (after.z - before.z) / (after.y - before.y) == pytest.approx(
+        (before.z - previous.z) / (before.y - previous.y)
+    )
+    plt.close("all")

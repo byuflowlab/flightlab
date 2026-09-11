@@ -40,6 +40,7 @@ from .project import (
 from .project_analysis import (
     TrimNotPossibleError,
     _grid_for_surface,
+    _station_dihedral,
     analyze as analyze_project,
     analyze_structure,
     aircraft_polar,
@@ -289,16 +290,27 @@ def _display_grid_for_surface(surface: LiftingSurface, ns: int, nc: int) -> np.n
     z_le = interpolate("z")[:, None]
     chord = interpolate("chord")[:, None]
     twist = np.radians(interpolate("twist_deg"))[:, None]
+    # Twist turns each section about the local spanwise axis, exactly as the
+    # analysis grid does, so a fin, a V-tail, and a flat wing all preview the
+    # same way they are solved.
+    dihedral = np.interp(locations, distances, _station_dihedral(surface))[:, None]
     chord_fraction = np.linspace(0.0, 1.0, nc + 1)[None, :]
     chordwise = chord * chord_fraction
     x = x_le + chordwise * np.cos(twist)
-    if surface.orientation == "vertical":
-        y = y_le + chordwise * np.sin(twist)
-        z = np.broadcast_to(z_le, x.shape).copy()
-    else:
-        y = np.broadcast_to(y_le, x.shape).copy()
-        z = z_le - chordwise * np.sin(twist)
+    y = y_le + chordwise * np.sin(twist) * np.sin(dihedral)
+    z = z_le - chordwise * np.sin(twist) * np.cos(dihedral)
     return np.stack((x, y, z))
+
+
+def _span_positions(view, surface: LiftingSurface) -> np.ndarray:
+    """Distance of each VLM strip centre from the root, measured along the surface.
+
+    ``view.y`` is fine for a flat wing but collapses to a single value on a
+    fin and understates the arc length on a V-tail, so span-load plots use
+    this path coordinate instead.
+    """
+    one_side = view.ds / (2.0 if surface.symmetric else 1.0)
+    return np.cumsum(one_side) - 0.5 * one_side
 
 
 def _safe_filename(name: str) -> str:
@@ -335,6 +347,7 @@ class Workbench:
         self._analysis_cache = {}
         self._last_loads_result = None
         self._last_propulsion_result = None
+        self._dynamics_displayed = False
 
         self.status = pn.pane.Alert("Ready.", alert_type="light")
         self.project_name = pn.widgets.TextInput(label="Project name")
@@ -638,7 +651,7 @@ class Workbench:
             "reference_area": "Manual coefficient reference area Sref [m²].",
             "reference_span": "Manual coefficient reference span bref [m].",
             "reference_chord": "Manual coefficient reference chord cref [m].",
-            "surface_orientation": "Horizontal surfaces enter longitudinal analysis; vertical surfaces enter directional models.",
+            "surface_orientation": "Descriptive label. The VLM meshes every mirrored surface from its stations regardless; the label chooses the handbook lateral-directional fin, tail-volume summaries, and which surfaces may be the coefficient reference, spar surface, or pitch-trim control.",
             "surface_purpose": "Descriptive role; it does not change the solver.",
             "surface_trim_control": "Geometry the trim solver may deflect to balance pitching moment.",
             "surface_symmetric": "Reflect this stored half-surface across the aircraft centerline.",
@@ -653,7 +666,7 @@ class Workbench:
             "airfoil_alpha_min": "Lowest section angle of attack in the airfoil sweep [deg].",
             "airfoil_alpha_max": "Highest section angle of attack in the airfoil sweep [deg].",
             "analysis_case": "Flight condition used for atmosphere, required lift, drag, and trim.",
-            "analysis_ns": "Spanwise panels assigned to the reference-span surface; other horizontal surfaces scale with span, with at least eight.",
+            "analysis_ns": "Spanwise panels assigned to the reference-span surface; every other analyzed surface scales with its span, with at least eight.",
             "analysis_nc": "Chordwise panels used on every lifting surface in the VLM solve.",
             "loads_case": "Flight case supplying atmosphere; direct mode also uses its speed when design speed is zero.",
             "loads_surface": "Horizontal lifting surface whose span load and spar are evaluated.",
@@ -861,6 +874,10 @@ class Workbench:
         self.include_propulsion_masses.value = setup.include_component_masses
         self.propulsor_table.value = pd.DataFrame([asdict(item) for item in setup.propulsors])
         self._updating = False
+        # Reset the browser's file chooser. Bokeh only reports a *changed*
+        # value, so without this, re-opening the same file after switching to
+        # a starter or example design would silently do nothing.
+        self.project_upload.clear()
         self._update_reference_visibility()
         self._show_selected_surface()
         self._refresh_all("Project loaded.")
@@ -892,13 +909,46 @@ class Workbench:
         self.status.object = message
         self.status.alert_type = "light"
 
+    STALE_RESULTS_MESSAGE = (
+        "Project inputs changed after this result was computed, so it was removed. "
+        "Run the analysis again to see results for the current design."
+    )
+
+    def _clear_loads_display(self, message=""):
+        self._last_loads_result = None
+        self.loads_download.disabled = True
+        self.loads_metrics.object = ""
+        self._replace_figure(self.loads_plots, None)
+        self.loads_warnings.object = message
+        self.loads_warnings.alert_type = "light"
+        self.loads_warnings.visible = bool(message)
+
+    def _clear_propulsion_display(self, message=""):
+        self._last_propulsion_result = None
+        self.propulsion_download.disabled = True
+        self.propulsion_metrics.object = ""
+        self.propulsor_results.value = pd.DataFrame()
+        self._replace_figure(self.propulsion_plot, None)
+        self.propulsion_warnings.object = message
+        self.propulsion_warnings.alert_type = "light"
+        self.propulsion_warnings.visible = bool(message)
+
+    def _clear_dynamics_display(self, message=""):
+        self._dynamics_displayed = False
+        self.mode_table.value = pd.DataFrame()
+        self.derivative_table.value = pd.DataFrame()
+        self._replace_figure(self.dynamics_plot, None)
+        self.dynamics_warnings.object = message
+        self.dynamics_warnings.alert_type = "light"
+        self.dynamics_warnings.visible = bool(message)
+
     def _analysis_inputs_changed(self, _):
         if self._updating:
             return
-        self._last_loads_result = None
-        self._last_propulsion_result = None
-        self.loads_download.disabled = True
-        self.propulsion_download.disabled = True
+        if self._last_loads_result is not None:
+            self._clear_loads_display(self.STALE_RESULTS_MESSAGE)
+        if self._last_propulsion_result is not None:
+            self._clear_propulsion_display(self.STALE_RESULTS_MESSAGE)
         self._refresh_generated_python()
 
     def _structure_changed(self, _):
@@ -912,8 +962,8 @@ class Workbench:
         setup.ultimate_factor = float(self.loads_ultimate_factor.value)
         setup.elastic_modulus = float(self.loads_modulus.value) * 1e9
         setup.cap_width = float(self.loads_cap_width.value)
-        self._last_loads_result = None
-        self.loads_download.disabled = True
+        if self._last_loads_result is not None:
+            self._clear_loads_display(self.STALE_RESULTS_MESSAGE)
         self._refresh_generated_python()
 
     def _analysis_resolution_changed(self, _):
@@ -929,8 +979,16 @@ class Workbench:
     def _analysis_case_changed(self, _):
         if self._updating:
             return
-        self._last_propulsion_result = None
-        self.propulsion_download.disabled = True
+        # Propulsion and dynamic-stability results belong to the case they were
+        # run for, so they never survive a case change.
+        if self._last_propulsion_result is not None:
+            self._clear_propulsion_display(
+                "The flight case changed; rerun the propulsion analysis for the selected case."
+            )
+        if self._dynamics_displayed:
+            self._clear_dynamics_display(
+                "The flight case changed; rerun the dynamic stability analysis for the selected case."
+            )
         cached = self._analysis_cache.get(self.analysis_case.value)
         if cached is None:
             self._last_result = None
@@ -986,22 +1044,31 @@ class Workbench:
         return io.BytesIO((self.project.to_json() + "\n").encode("utf-8"))
 
     def _invalidate_export_results(self):
-        """Prevent downloads from silently describing an earlier project state."""
+        """Remove every result computed from an earlier project state.
+
+        Results are cleared from the tabs as well as from the caches and
+        downloads, so a geometry edit can never leave yesterday's numbers on
+        screen next to today's design.
+        """
         deleted_cached_cases = bool(self._analysis_cache)
         self._last_airfoil_result = None
         self._last_airfoil_alpha = None
         self._last_airfoil_context = None
+        self.airfoil_download.disabled = True
+        if deleted_cached_cases or self._last_result is not None:
+            self._clear_analysis_display(self.STALE_RESULTS_MESSAGE)
         self._last_result = None
         self._last_polar = None
         self._last_stall = None
         self._analysis_cache.clear()
-        self._last_loads_result = None
-        self._last_propulsion_result = None
-        self.airfoil_download.disabled = True
         self.analysis_download.disabled = True
         self.analysis_span_download.disabled = True
-        self.loads_download.disabled = True
-        self.propulsion_download.disabled = True
+        if self._last_loads_result is not None:
+            self._clear_loads_display(self.STALE_RESULTS_MESSAGE)
+        if self._last_propulsion_result is not None:
+            self._clear_propulsion_display(self.STALE_RESULTS_MESSAGE)
+        if self._dynamics_displayed:
+            self._clear_dynamics_display(self.STALE_RESULTS_MESSAGE)
         return deleted_cached_cases
 
     def _download_airfoil_csv(self):
@@ -1080,6 +1147,7 @@ class Workbench:
                 "mass_kg": np.repeat(result.mass_properties.mass, count),
                 "alpha_deg": np.repeat(solution.alpha, count),
                 "y_m": view.y,
+                "span_position_m": _span_positions(view, surface),
                 "strip_width_m": view.ds,
                 "chord_m": view.chord,
                 "section_cl": view.cl,
@@ -1145,6 +1213,9 @@ class Workbench:
     def _open_project(self, event):
         if not event.new:
             return
+        # Reset the browser's file chooser now, so the same file can be chosen
+        # again even when this one turns out to be unreadable.
+        self.project_upload.clear()
         try:
             self._load_project(AircraftProject.from_json(event.new.decode("utf-8")))
         except Exception as exc:
@@ -1266,10 +1337,20 @@ class Workbench:
         if surface is None:
             return
         last = surface.stations[-1] if surface.stations else SurfaceStation(0, 0, 0, 0.2)
-        if surface.orientation == "vertical":
-            new = SurfaceStation(last.x_le + 0.03, last.y, last.z + 0.15, last.chord * 0.8, last.twist_deg, last.airfoil)
-        else:
-            new = SurfaceStation(last.x_le + 0.03, last.y + 0.20, last.z, last.chord * 0.8, last.twist_deg, last.airfoil)
+        # Continue outboard along the last segment, so a fin grows upward, a
+        # V-tail keeps its angle, and a flat wing extends in y.
+        dy = dz = 0.0
+        if len(surface.stations) >= 2:
+            previous = surface.stations[-2]
+            dy, dz = last.y - previous.y, last.z - previous.z
+        length = math.hypot(dy, dz)
+        if length <= 0.0:
+            dy, dz, length = (0.0, 1.0, 1.0) if surface.orientation == "vertical" else (1.0, 0.0, 1.0)
+        step = 0.20 / length
+        new = SurfaceStation(
+            last.x_le + 0.03, last.y + step * dy, last.z + step * dz,
+            last.chord * 0.8, last.twist_deg, last.airfoil,
+        )
         surface.stations.append(new)
         self._show_selected_surface()
         self._refresh_all(f"Added a station to {surface.name}.")
@@ -1678,6 +1759,7 @@ class Workbench:
     def _propeller_data_uploaded(self, event):
         if not event.new or self.propeller_data_select.value not in self.project.propellers:
             return
+        self.propeller_data_upload.clear()
         try:
             frame = pd.read_csv(io.BytesIO(event.new))
             normalized = {str(column).strip().lower(): column for column in frame.columns}
@@ -1751,6 +1833,7 @@ class Workbench:
     def _airfoil_uploaded(self, event):
         if not event.new:
             return
+        self.airfoil_upload.clear()
         try:
             filename = self.airfoil_upload.filename or "custom.dat"
             section = foil.from_dat_text(event.new.decode("utf-8", errors="replace"), Path(filename).stem)
@@ -1898,14 +1981,9 @@ class Workbench:
                 try:
                     _, b_ref, _ = self.project.reference_quantities()
                     surface_ns = max(8, int(round(self.analysis_ns.value * surface.span / b_ref)))
-                    if surface.orientation == "vertical":
-                        grid = _display_grid_for_surface(
-                            surface, surface_ns, int(self.analysis_nc.value)
-                        )
-                    else:
-                        grid, _ = _grid_for_surface(
-                            self.project, surface, surface_ns, int(self.analysis_nc.value)
-                        )
+                    grid, _ = _grid_for_surface(
+                        self.project, surface, surface_ns, int(self.analysis_nc.value)
+                    )
                     for sign in ([1, -1] if surface.symmetric else [1]):
                         mesh = grid.copy()
                         mesh[1] *= sign
@@ -2256,14 +2334,15 @@ class Workbench:
         for name in first.surfaces:
             low_view = polar.solutions[lower].surface(name)
             high_view = polar.solutions[upper].surface(name)
+            position = _span_positions(low_view, self.project.surface_named(name))
             local_cl = low_view.cl + fraction * (high_view.cl - low_view.cl)
             local_margin = limits[name] - local_cl
             index = int(np.argmin(local_margin))
             if local_margin[index] < critical_margin:
                 critical_margin = float(local_margin[index])
-                critical = (name, index, float(low_view.y[index]))
+                critical = (name, index, float(position[index]))
             distributions[name] = {
-                "y": low_view.y,
+                "s": position,
                 "cl": local_cl,
                 "cl_max": limits[name],
             }
@@ -2419,40 +2498,42 @@ class Workbench:
         ax.legend(fontsize=8)
 
         ax = axes[2, 0]
-        for surface in self.project.horizontal_surfaces:
-            if surface.name not in solution.surfaces:
+        for name in solution.surfaces:
+            surface = self.project.surface_named(name)
+            if surface is None:
                 continue
-            view = solution.surface(surface.name)
+            view = solution.surface(name)
+            position = _span_positions(view, surface)
             line = ax.plot(
-                np.r_[0.0, view.y], np.r_[view.ccl[0], view.ccl],
+                np.r_[0.0, position], np.r_[view.ccl[0], view.ccl],
                 label=f"{surface.name} actual",
             )[0]
             if surface.purpose == "wing":
-                eta = np.clip(2.0 * np.abs(view.y) / surface.span, 0.0, 1.0)
+                eta = np.clip(2.0 * position / surface.span, 0.0, 1.0)
                 ellipse_shape = np.sqrt(np.clip(1.0 - eta**2, 0.0, None))
                 denominator = np.sum(ellipse_shape * view.ds)
                 ellipse = ellipse_shape * (
                     np.sum(view.ccl * view.ds) / max(abs(denominator), 1e-30)
                 )
                 ax.plot(
-                    np.r_[0.0, view.y], np.r_[ellipse[0], ellipse], "--",
+                    np.r_[0.0, position], np.r_[ellipse[0], ellipse], "--",
                     color=line.get_color(), label=f"{surface.name} same-lift ellipse",
                 )
         ax.set(
-            xlabel="semispan panel center [m]", ylabel="$c c_l$ [m]",
+            xlabel="distance along surface from root [m]", ylabel="$c c_l$ [m]",
             title="All-surface loading; per-wing same-lift ellipses",
         )
         ax.legend(fontsize=7, ncol=2)
 
         ax = axes[2, 1]
         for name, distribution in stall["distributions"].items():
-            line = ax.plot(distribution["y"], distribution["cl"], label=f"{name} $c_l$")[0]
+            line = ax.plot(distribution["s"], distribution["cl"], label=f"{name} $c_l$")[0]
             ax.plot(
-                distribution["y"], distribution["cl_max"], "--",
+                distribution["s"], distribution["cl_max"], "--",
                 color=line.get_color(), label=f"{name} $c_{{l,max}}$",
             )
         title = "Section lift at first local stall" if stall["reached"] else "Section lift at highest swept angle"
-        ax.set(xlabel="semispan panel center [m]", ylabel="section coefficient", title=title)
+        ax.set(xlabel="distance along surface from root [m]", ylabel="section coefficient", title=title)
         ax.legend(fontsize=7, ncol=2)
 
         for axis in axes.ravel():
@@ -2794,6 +2875,7 @@ class Workbench:
             self.dynamics_warnings.object = "\n".join(f"• {item}" for item in result.warnings)
             self.dynamics_warnings.visible = True
             self.dynamics_warnings.alert_type = "warning"
+            self._dynamics_displayed = True
             self.status.object = f"Completed dynamic stability analysis for {case.name}."
             self.status.alert_type = "success"
         except Exception as exc:
@@ -2943,9 +3025,14 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             "The airfoil field is a selector containing bundled, NACA, and imported project airfoils."
         )
         role_help = pn.pane.Alert(
-            "These fields have separate jobs. **Orientation** determines whether a surface enters the "
-            "symmetric longitudinal solve or lateral-directional model. **Purpose** is a descriptive "
-            "label only. **Pitch-trim control = whole_surface** rotates the complete surface; **elevator** "
+            "These fields have separate jobs. The vortex lattice meshes **every mirrored surface** from "
+            "its stations, so wings, tails, V-tails, and twin fins all enter the symmetric longitudinal "
+            "solve at their true dihedral; a single centerline fin is skipped because it carries no load "
+            "in symmetric flight. **Orientation** is a descriptive label: it picks the fin used by the "
+            "handbook lateral-directional model and the tail-volume summary, and only horizontal "
+            "surfaces may serve as the coefficient reference, spar surface, or pitch-trim control. "
+            "**Purpose** is a descriptive label only. "
+            "**Pitch-trim control = whole_surface** rotates the complete surface; **elevator** "
             "deflects only the camber line aft of the entered hinge. Positive elevator deflection is "
             "trailing-edge down. The solver varies aircraft angle of attack and one shared control "
             "deflection while it solves lift = weight and pitching moment = 0. "
@@ -2995,12 +3082,13 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
         )
         analysis_help = pn.pane.Alert(
             "Spanwise panels use cosine spacing. The entered count applies to a surface with the "
-            "reference span; each other horizontal surface is scaled by its span and receives at "
+            "reference span; each other analyzed surface is scaled by its span and receives at "
             "least eight panels. The chordwise count applies to every lifting surface. Bodies are "
             "not panelled: they use the empirical drag correlations shown in the component table. "
             "Span-loading values are reported at panel centers. Results are cached by flight-case name. "
             "Any geometry or panel-count edit deletes every cached case, so stale results cannot be "
-            "revisited. Every horizontal surface is plotted; each surface whose purpose is ‘wing’ also "
+            "revisited. Every analyzed surface is plotted against distance from its root measured along "
+            "the surface; each surface whose purpose is ‘wing’ also "
             "gets its own same-lift ellipse. For a biplane these are separate diagnostics, not a single "
             "whole-aircraft optimum. Aircraft CLmax is estimated where the first local section cl "
             "touches its airfoil clmax at the strip Reynolds number.",

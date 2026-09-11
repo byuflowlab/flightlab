@@ -210,3 +210,78 @@ def test_trim_reports_required_deflection_outside_control_limits():
 
     with pytest.raises(TrimNotPossibleError, match="outside the entered"):
         trim(project, ns=14, nc=6)
+
+
+def test_vlm_takes_dihedral_from_the_stations_and_ignores_the_orientation_label():
+    from copy import deepcopy
+
+    import numpy as np
+
+    from flightlab.project import SurfaceStation, blank_project
+    from flightlab.project_analysis import _grid_for_surface, _station_dihedral
+
+    project = blank_project()
+    wing, fin = project.surfaces[0], project.surfaces[2]
+    # Leading edges land exactly where the student entered them; the wing's
+    # dihedral is not applied a second time on top of the absolute stations.
+    grid, _ = _grid_for_surface(project, wing, 12, 4)
+    assert grid[:, 0, 0] == pytest.approx([wing.stations[0].x_le, wing.stations[0].y, wing.stations[0].z])
+    assert grid[:, 0, -1] == pytest.approx([wing.stations[-1].x_le, wing.stations[-1].y, wing.stations[-1].z])
+    assert 0.0 < np.degrees(_station_dihedral(wing)).min() < 10.0
+    # A fin is recognised from its geometry: sections rotate about the vertical
+    # spanwise axis, so the chord still runs aft along x.
+    assert np.degrees(_station_dihedral(fin)) == pytest.approx([90.0, 90.0])
+    fin_grid, _ = _grid_for_surface(project, fin, 8, 3)
+    assert fin_grid[:, -1, 0] == pytest.approx([fin.stations[0].x_le + fin.stations[0].chord, 0.0, fin.stations[0].z])
+
+    # A 45-degree V-tail gives the same longitudinal answer under either label.
+    vee = deepcopy(project)
+    vee.surfaces.pop(2)
+    c = s = np.sqrt(0.5)
+    vee.surfaces[1].stations = [
+        SurfaceStation(0.72, 0.0, 0.04, 0.18, 0.0, "naca0012"),
+        SurfaceStation(0.75, 0.25 * c, 0.04 + 0.25 * s, 0.11, 0.0, "naca0012"),
+    ]
+    assert np.degrees(_station_dihedral(vee.surfaces[1])) == pytest.approx([45.0, 45.0])
+    results = {}
+    for label in ("horizontal", "vertical"):
+        candidate = deepcopy(vee)
+        candidate.surfaces[1].orientation = label
+        candidate.surfaces[1].trim_control = "fixed"
+        results[label] = analyze(candidate, alpha=3.0)
+    assert results["vertical"].surfaces == results["horizontal"].surfaces == ("Main wing", "Horizontal tail")
+    assert results["vertical"].CL == pytest.approx(results["horizontal"].CL)
+    assert results["vertical"].Cm == pytest.approx(results["horizontal"].Cm)
+
+    # Whole-surface deflection acts normal to the V-tail, so its pitch control
+    # power is roughly cos^2(45 deg) of the same tail laid flat.
+    flat = deepcopy(project)
+    flat.surfaces.pop(2)
+    def control_power(candidate):
+        return analyze(candidate, alpha=3.0, trim_deflection=5.0).Cm - analyze(candidate, alpha=3.0).Cm
+    ratio = control_power(vee) / control_power(flat)
+    assert 0.40 < ratio < 0.56
+
+
+def test_centerline_fin_is_skipped_but_mirrored_fins_enter_the_solve():
+    from copy import deepcopy
+
+    from flightlab.project import blank_project
+
+    project = blank_project()
+    fin = project.surfaces[2]
+    baseline = analyze(project, alpha=3.0)
+    assert fin.name not in baseline.surfaces
+
+    twin = deepcopy(project)
+    for station in twin.surfaces[2].stations:
+        station.y = 0.3
+    with pytest.raises(ValueError, match="mirrored across the centerline or lying on it"):
+        analyze(twin, alpha=3.0)
+    twin.surfaces[2].symmetric = True
+    twin.require_valid()
+    with_fins = analyze(twin, alpha=3.0)
+    assert fin.name in with_fins.surfaces
+    # Twin fins sit in the wing's sidewash, so they change the answer only slightly.
+    assert with_fins.CL == pytest.approx(baseline.CL, rel=0.05)
+    assert with_fins.CL != pytest.approx(baseline.CL, abs=1e-6)
