@@ -8,12 +8,14 @@ on:
       - "student_setup/build_downloads.sh"
       - "student_setup/macos/**"
       - "student_setup/windows/**"
+      - "student_setup/linux/**"
   pull_request:
     paths:
       - ".github/workflows/student-launchers.yml"
       - "student_setup/build_downloads.sh"
       - "student_setup/macos/**"
       - "student_setup/windows/**"
+      - "student_setup/linux/**"
 
 permissions:
   contents: read
@@ -25,16 +27,19 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Run the student launcher
+      - name: Run the student launcher twice (install, then reuse)
         env:
           FLIGHTLAB_TEST_ONLY: "1"
           XDG_DATA_HOME: ${{ runner.temp }}/flightlab-student-test
-        run: ./student_setup/macos/Start\ FlightLab.command
+        run: |
+          ./student_setup/macos/Start\ FlightLab.command
+          ./student_setup/macos/Start\ FlightLab.command
       - name: Build and inspect student downloads
         run: |
           ./student_setup/build_downloads.sh
           unzip -t student_setup/downloads/FlightLab-macOS.zip
           unzip -t student_setup/downloads/FlightLab-Windows.zip
+          unzip -t student_setup/downloads/FlightLab-Linux.zip
 
   windows:
     name: Windows launcher
@@ -42,9 +47,25 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Run the student launcher
+      - name: Run the student launcher twice (install, then reuse)
         shell: cmd
         env:
           FLIGHTLAB_TEST_ONLY: "1"
           LOCALAPPDATA: ${{ runner.temp }}\flightlab-student-test
-        run: call "student_setup\windows\Start FlightLab.cmd"
+        run: |
+          call "student_setup\windows\Start FlightLab.cmd"
+          call "student_setup\windows\Start FlightLab.cmd"
+
+  linux:
+    name: Linux launcher
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the student launcher twice (install, then reuse)
+        env:
+          FLIGHTLAB_TEST_ONLY: "1"
+          XDG_DATA_HOME: ${{ runner.temp }}/flightlab-student-test
+        run: |
+          bash "./student_setup/linux/Start FlightLab.sh"
+          bash "./student_setup/linux/Start FlightLab.sh"

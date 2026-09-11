@@ -1,12 +1,14 @@
-#!/bin/zsh
+#!/usr/bin/env bash
 
-# Double-click launcher for the ME 415 FlightLab workbench.
+# Terminal launcher for the ME 415 FlightLab workbench on Linux.
 # FlightLab is pinned so every student uses the same course version.
 #
 # The first launch downloads uv, Python 3.12, and the course build into a
 # FlightLab-only folder under ~/.local/share/flightlab.  Later launches start
 # that installed copy directly, so nothing is downloaded or re-resolved again
 # until the instructor promotes a new course build.
+#
+# Run it with:  bash "Start FlightLab.sh"
 
 set -u
 set -o pipefail
@@ -27,7 +29,18 @@ FLIGHTLAB_TEST_ONLY="${FLIGHTLAB_TEST_ONLY:-0}"
 wait_for_key() {
     echo "Press any key to close this window."
     if [[ "${FLIGHTLAB_TEST_ONLY}" != "1" ]]; then
-        read -k 1
+        read -r -s -n 1
+    fi
+}
+
+# Download a URL to a file with whichever of curl or wget the machine has.
+fetch() {
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf --connect-timeout 5 --max-time 15 "$1" -o "$2"
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q --timeout=15 --tries=1 -O "$2" "$1"
+    else
+        return 1
     fi
 }
 
@@ -42,24 +55,27 @@ if [[ ! -x "${FLIGHTLAB_UV}" ]]; then
     echo "This does not need administrator access."
     echo
     mkdir -p "${FLIGHTLAB_UV_DIR}"
-    if ! curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="${FLIGHTLAB_UV_DIR}" sh; then
-        echo
-        echo "Setup could not be downloaded. Check the internet connection and try again."
+    if command -v curl >/dev/null 2>&1; then
+        curl -LsSf https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="${FLIGHTLAB_UV_DIR}" sh
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- https://astral.sh/uv/install.sh | env UV_UNMANAGED_INSTALL="${FLIGHTLAB_UV_DIR}" sh
+    else
+        echo "This computer has neither curl nor wget. Install one of them (for example"
+        echo "'sudo apt install curl' on Ubuntu) and run this launcher again."
         wait_for_key
         exit 1
     fi
     if [[ ! -x "${FLIGHTLAB_UV}" ]]; then
         echo
-        echo "Setup finished without creating the launcher."
-        echo "Take a screenshot of this window and send it to your TA."
+        echo "Setup could not be downloaded. Check the internet connection and try again."
+        echo "If the problem continues, take a screenshot of this window and send it to your TA."
         wait_for_key
         exit 1
     fi
 fi
 
 echo "Checking for a course update..."
-if curl -LsSf --connect-timeout 5 --max-time 15 \
-    "${FLIGHTLAB_RELEASE_URL}" -o "${FLIGHTLAB_RELEASE_TEMP}" \
+if fetch "${FLIGHTLAB_RELEASE_URL}" "${FLIGHTLAB_RELEASE_TEMP}" \
     && grep -Eq '^[0-9a-f]{40}$' "${FLIGHTLAB_RELEASE_TEMP}"; then
     mv "${FLIGHTLAB_RELEASE_TEMP}" "${FLIGHTLAB_RELEASE_FILE}"
 elif [[ -f "${FLIGHTLAB_RELEASE_FILE}" ]] \
@@ -78,7 +94,7 @@ fi
 
 if [[ ! -x "${FLIGHTLAB_PYTHON}" || "${FLIGHTLAB_INSTALLED}" != "${FLIGHTLAB_COMMIT}" ]]; then
     FLIGHTLAB_REQUIREMENT="flightlab[workbench] @ https://github.com/byuflowlab/flightlab/archive/${FLIGHTLAB_COMMIT}.zip"
-    echo "Installing course build ${FLIGHTLAB_COMMIT[1,8]}..."
+    echo "Installing course build ${FLIGHTLAB_COMMIT:0:8}..."
     echo "The first install downloads Python and FlightLab's libraries (150-200 MB)"
     echo "and can take several minutes. Later updates reuse what is already downloaded."
     echo
@@ -105,8 +121,9 @@ if [[ ! -x "${FLIGHTLAB_PYTHON}" || "${FLIGHTLAB_INSTALLED}" != "${FLIGHTLAB_COM
     fi
 fi
 
-echo "Course build: ${FLIGHTLAB_COMMIT[1,8]}"
+echo "Course build: ${FLIGHTLAB_COMMIT:0:8}"
 echo "Starting FlightLab. Your web browser will open when it is ready."
+echo "If no browser opens, copy the http://localhost address printed below into one."
 echo
 echo "Keep this window open while using FlightLab."
 echo "Close this window, or press Control-C, when you are finished."

@@ -26,6 +26,23 @@ def main() -> None:
         print(format_tools(args.topic))
 
 
+def _session_factory(workbench_class, first):
+    """Hand a pre-built workbench to the first browser tab, then build fresh ones.
+
+    Building the first :class:`Workbench` also warms matplotlib and NeuralFoil,
+    which is most of the wait.  Doing it before the browser opens means the
+    first page appears almost as soon as the tab connects instead of sitting
+    blank while the server builds it; every later tab still gets its own state.
+    """
+    pending = [first]
+
+    def create():
+        workbench = pending.pop() if pending else workbench_class()
+        return workbench.view()
+
+    return create
+
+
 def launch_workbench(argv=None) -> None:
     """Launch the optional local browser workbench."""
     parser = argparse.ArgumentParser(
@@ -35,10 +52,9 @@ def launch_workbench(argv=None) -> None:
     parser.add_argument("--port", type=int, default=0, help="local port; 0 chooses an available port")
     parser.add_argument("--no-open", action="store_true", help="start the server without opening a browser")
     args = parser.parse_args(argv)
-    # ``uv tool run`` reports package installation before it hands control to
-    # FlightLab.  Importing Panel, matplotlib, and the numerical workbench can
-    # then take a while on student hardware, so make that otherwise-silent gap
-    # explicit in the launcher window.
+    # Importing Panel, matplotlib, and the numerical workbench can take a
+    # while on student hardware, so narrate each otherwise-silent phase in the
+    # launcher window.
     print("Preparing FlightLab (loading scientific libraries)...", flush=True)
     try:
         import panel as pn
@@ -46,10 +62,16 @@ def launch_workbench(argv=None) -> None:
         raise SystemExit(
             "The workbench needs Panel. Install FlightLab with the 'workbench' extra."
         ) from exc
-    from .workbench import create_workbench
+    from .workbench import Workbench
+
+    print("Building the workbench page (the first one is the slow one)...", flush=True)
+    first = Workbench()
+    print("Starting the local server. Keep this window open while FlightLab is running.", flush=True)
+    if not args.no_open:
+        print("Your web browser will open in a moment.", flush=True)
 
     pn.serve(
-        create_workbench,
+        _session_factory(Workbench, first),
         title="FlightLab Workbench",
         show=not args.no_open,
         port=args.port,

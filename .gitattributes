@@ -3,3 +3,4 @@ pixi.lock merge=binary linguist-language=YAML linguist-generated=true -diff
 student_setup/macos/*.command text eol=lf
 student_setup/windows/*.cmd text eol=crlf
 student_setup/*.sh text eol=lf
+student_setup/linux/*.sh text eol=lf

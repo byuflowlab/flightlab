@@ -13,15 +13,17 @@ sizing, plotting helpers, and a small aircraft/component catalog.
 
 Students do not need to install Git, Python, or an environment manager.
 
-1. Download the launcher for [macOS](student_setup/downloads/FlightLab-macOS.zip) or
-   [Windows](student_setup/downloads/FlightLab-Windows.zip).
+1. Download the launcher for [macOS](student_setup/downloads/FlightLab-macOS.zip),
+   [Windows](student_setup/downloads/FlightLab-Windows.zip), or
+   [Linux](student_setup/downloads/FlightLab-Linux.zip).
 2. Unzip it and read **START HERE**.
-3. Double-click **Start FlightLab** and keep its small launcher window open while the
-   workbench is running in the browser.
+3. Double-click **Start FlightLab** (on Linux, run `bash "Start FlightLab.sh"` in a terminal)
+   and keep its small launcher window open while the workbench is running in the browser.
 
 The first launch downloads a private copy of Python and the course packages and can take
-several minutes. Later launches reuse the installation and automatically check for the current
-tested course build. Saved `.flightlab.json` project files are not affected by updates.
+several minutes. Later launches start that installation directly and only download again when
+the instructor promotes a new course build. Saved `.flightlab.json` project files are not
+affected by updates.
 
 For Homework 1, sign into a Google account and [open the starter notebook in Google
 Colab](https://colab.research.google.com/github/byuflowlab/flightlab/blob/main/notebooks/hw1_starter.ipynb).

@@ -1,0 +1,18 @@
+FLIGHTLAB FOR LINUX
+
+1. Open a terminal in the folder that contains "Start FlightLab.sh".
+2. Run:   bash "Start FlightLab.sh"
+   Many file managers can also run it directly: right-click the file and
+   choose "Run as a Program", or first make it executable with
+   chmod +x "Start FlightLab.sh" and then double-click it.
+3. Keep the terminal window open while you use FlightLab in your browser.
+   If no browser opens, copy the http://localhost address it prints into one.
+4. Close the terminal window, or press Control-C, when you are finished.
+
+The first launch needs internet access and may take several minutes. Later
+launches are faster. FlightLab checks for course updates automatically.
+
+The launcher needs curl or wget, which nearly every distribution includes.
+On Ubuntu, "sudo apt install curl" adds it if it is missing.
+
+If setup fails, take a screenshot of the terminal window and send it to your TA.
