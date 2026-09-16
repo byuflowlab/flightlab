@@ -1,0 +1,8 @@
+# Loose requirements for the classroom workbench.
+#
+# student_setup/update_pins.py resolves these, together with the core
+# dependencies in pyproject.toml, to one exact version of every package and
+# writes the result into the "workbench" extra of pyproject.toml.  Edit this
+# file to change what the workbench needs; never edit the generated pins.
+panel>=1.9,<2
+pandas>=1.5

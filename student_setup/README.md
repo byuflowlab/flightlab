@@ -49,6 +49,60 @@ install fails part-way (for example, the connection drops), the previously
 installed build starts instead. If the update check itself fails, the
 already-installed build starts without any network access.
 
+## Library versions are frozen for the semester
+
+The `workbench` extra in `pyproject.toml` lists every third-party package at
+one exact version, resolved once for Windows, macOS, and Linux on Python 3.12.
+Because the launchers install `flightlab[workbench]` from the promoted commit,
+every student receives the same libraries no matter when they first install or
+update. Only FlightLab itself changes from one promoted build to the next.
+
+This exists because of a real failure. In September 2026 Tornado 6.5.9 was
+published on a Monday and broke every static file in Bokeh-based apps. Any
+student whose first install happened that day got a workbench with no styling
+and a wall of `AttributeError` messages, while students who had installed a
+day earlier were fine. Exact pins make "which day did you install" irrelevant.
+
+The pins are generated, not hand-edited. The loose inputs are the core
+`dependencies` in `pyproject.toml` and `student_setup/workbench.in`. About once
+a year, before the course starts, refresh them with `uv` on the PATH:
+
+```bash
+python student_setup/update_pins.py
+pixi run test            # or pytest in any environment with the new pins
+python -m flightlab workbench
+```
+
+Then commit and promote as usual. Do not edit the block between `BEGIN PINS`
+and `END PINS` by hand; rerun the script instead. Editing `workbench.in`
+(for example to move to a new Panel major version) also requires rerunning it.
+
+## Resetting a student's installation
+
+A student whose installed environment is broken, for whatever reason, can force
+a clean reinstall of the current course build. Re-downloading the launcher ZIP
+alone does **not** do this: the environment lives outside the ZIP and the
+launcher will keep starting it. Deleting `installed.txt` makes the next launch
+rebuild the environment; deleting the whole folder also re-downloads `uv` and
+Python. Both take the several-minute first-install time again.
+
+**Windows.** Press the Windows key and R together, paste
+`%LOCALAPPDATA%\FlightLab`, and press Enter. File Explorer opens the FlightLab
+folder (it is inside the hidden `AppData` folder, so browsing to it does not
+work). Delete `installed.txt`, or go up one level and delete the whole
+`FlightLab` folder. Then open **Start FlightLab.cmd** again.
+
+**macOS.** Click the desktop so Finder is active, press Shift, Command, and G
+together, paste `~/.local/share/flightlab`, and press Return. Drag
+`installed.txt` to the Trash, or press Command and the up arrow and drag the
+whole `flightlab` folder to the Trash. Then open **Start FlightLab.command**
+again. From Terminal the equivalent is
+`rm ~/.local/share/flightlab/installed.txt`.
+
+**Linux.** Same folder as macOS: `rm ~/.local/share/flightlab/installed.txt`
+(or `rm -rf ~/.local/share/flightlab`), then run the launcher again. If
+`XDG_DATA_HOME` is set, the folder is under that directory instead.
+
 ## Changing the saved project file format
 
 Saved `.flightlab.json` files carry a `format_version` (currently 3, set by
@@ -87,9 +141,9 @@ Earlier launchers ran `uv tool run` on every start. That re-resolved the
 dependency set against PyPI each time, so a routine matplotlib or pandas
 release could trigger a surprise multi-minute reinstall in class, and two
 students could end up with different library versions of the same course
-build. Installing once per promoted commit removes both problems; the
-dependency versions a student receives are the ones current when that commit
-was first installed on their machine.
+build. Installing once per promoted commit removes both problems, and the exact
+pins in the `workbench` extra (see above) mean the dependency versions a
+student receives do not depend on when that install happened.
 
 The initial fallback release is Git commit
 `0ee06b60ba2d657cb7dbe324faef81d2c8be8e5a` while the package is prepared for

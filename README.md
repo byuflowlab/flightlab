@@ -46,6 +46,11 @@ git clone https://github.com/byuflowlab/flightlab.git
 cd flightlab
 ```
 
+The `workbench` extra pins every library to one exact version so that all students
+run identical software for the semester; see the
+[library-versions note](student_setup/README.md#library-versions-are-frozen-for-the-semester).
+Installing `flightlab` alone keeps the loose ranges in `dependencies`.
+
 ### Pixi
 
 Pixi installs the package, browser workbench, and test tools from `pyproject.toml`:

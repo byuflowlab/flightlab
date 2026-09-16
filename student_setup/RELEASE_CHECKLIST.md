@@ -30,6 +30,19 @@
 Do not rebuild or repost the ZIP files for an ordinary code update. Rebuild them
 only when a launcher or its `START HERE.txt` file changes.
 
+## Yearly library refresh
+
+Do this once before the course starts, not during the semester.
+
+1. With `uv` on the PATH, run `python student_setup/update_pins.py`. It rewrites
+   the exact pins in the `workbench` extra of `pyproject.toml` from
+   `student_setup/workbench.in` and the core dependencies.
+2. Run the test suite and open the workbench once with the new pins (see the
+   [library-versions note](README.md#library-versions-are-frozen-for-the-semester)).
+3. Commit, push, and promote the commit exactly like a weekly code update.
+   Students receive the refreshed libraries with that build; no new ZIP files
+   are needed.
+
 ## Rollback
 
 Put the last known-good commit hash back in `student_setup/release.txt` and push
