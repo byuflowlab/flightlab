@@ -862,6 +862,89 @@ def derivatives(
     )
 
 
+# --- apparent mass ----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ApparentMass:
+    """Apparent (added) mass and inertia of the air a light aircraft drags along.
+
+    A lifting surface accelerating normal to itself also accelerates a
+    cylinder of air of roughly its chord in diameter.  For a full-scale
+    aircraft that air is a negligible fraction of the mass; for a one-kilogram
+    model it is not, and it slows the short period and roll subsidence
+    noticeably.  AVL includes it in its eigenmode analysis with the strip
+    formula used here: each strip of chord ``c`` and width ``w`` carries
+    ``rho * (pi/4) * c_perp * c * w`` of apparent mass along its normal, plus
+    ``rho * (pi/4) * c_perp**3 / 64 * c * w`` of apparent inertia about its own
+    spanwise axis.
+
+    Attributes
+    ----------
+    mass : ndarray, shape (3, 3)
+        Apparent-mass tensor in body axes, kg.  ``mass[2, 2]`` is what
+        resists vertical acceleration.
+    inertia : ndarray, shape (3, 3)
+        Apparent-inertia tensor about the centre of gravity, kg m^2, in the
+        same positive-definite tensor form as :attr:`MassProperties.inertia`.
+    """
+
+    mass: np.ndarray
+    inertia: np.ndarray
+
+    @property
+    def m_x(self) -> float:
+        return float(self.mass[0, 0])
+
+    @property
+    def m_y(self) -> float:
+        return float(self.mass[1, 1])
+
+    @property
+    def m_z(self) -> float:
+        return float(self.mass[2, 2])
+
+    @property
+    def Ixx(self) -> float:
+        return float(self.inertia[0, 0])
+
+    @property
+    def Iyy(self) -> float:
+        return float(self.inertia[1, 1])
+
+    @property
+    def Izz(self) -> float:
+        return float(self.inertia[2, 2])
+
+    @property
+    def Ixz(self) -> float:
+        """Product of inertia in the ``int x z dm`` convention (tensor off-diagonal negated)."""
+        return float(-self.inertia[0, 2])
+
+
+def apparent_mass_from_strips(strips, rho: float, x_cg=(0.0, 0.0, 0.0)) -> ApparentMass:
+    """Apparent mass and inertia from strip data, per AVL's formula.
+
+    ``strips`` yields ``(chord, width, midchord_xyz, spanwise_unit, normal_unit)``
+    for every strip on every surface (both sides of a mirrored surface).
+    """
+    mass = np.zeros((3, 3))
+    inertia = np.zeros((3, 3))
+    x_cg = np.asarray(x_cg, dtype=float)
+    for chord, width, midchord, spanwise, normal in strips:
+        spanwise = np.asarray(spanwise, dtype=float)
+        normal = np.asarray(normal, dtype=float)
+        area = chord * width
+        # chord measured perpendicular to the spanwise axis, as AVL does
+        c_perp = chord * abs(spanwise[1] * normal[2] - spanwise[2] * normal[1])
+        m_strip = area * 0.25 * np.pi * c_perp
+        i_strip = area * 0.25 * np.pi * c_perp**3 / 64.0
+        arm = np.cross(np.asarray(midchord, dtype=float) - x_cg, normal)
+        mass += m_strip * np.outer(normal, normal)
+        inertia += m_strip * np.outer(arm, arm) + i_strip * np.outer(spanwise, spanwise)
+    return ApparentMass(mass=rho * mass, inertia=rho * inertia)
+
+
 # --- dynamic modes ----------------------------------------------------------
 
 
@@ -1007,6 +1090,7 @@ def longitudinal_modes(
     thrust_dM_dV: float = 0.0,
     S_ref: Optional[float] = None,
     c_ref: Optional[float] = None,
+    apparent: Optional[ApparentMass] = None,
     **kwargs,
 ) -> Modes:
     """Phugoid and short-period modes.
@@ -1027,6 +1111,10 @@ def longitudinal_modes(
         Reference area and chord the derivatives are on.  Default to the
         aircraft's wing; pass them (and ``derivs``, ``mass``, ``Iyy``,
         ``x_cg``) to use this function without a fleet aircraft at all.
+    apparent : ApparentMass, optional
+        Apparent mass and inertia of the surrounding air, added to the
+        rigid values in the force and moment equations.  Gravity acts on the
+        rigid mass alone.
     **kwargs
         Passed to :func:`derivatives`.
 
@@ -1079,14 +1167,20 @@ def longitudinal_modes(
     CL0 = CW
     CD0 = d.CD
 
+    # Apparent mass resists acceleration along each axis and about each axis;
+    # weight acts on the rigid mass only.
+    m_x = mass + (apparent.m_x if apparent else 0.0)
+    m_z = mass + (apparent.m_z if apparent else 0.0)
+    Iyy = Iyy + (apparent.Iyy if apparent else 0.0)
+
     qS = q_bar * S
     # dimensional derivatives, per the standard small-perturbation form
-    Xu = -qS * (2.0 * CD0) / (mass * V) + thrust_dT_dV / mass
-    Xw = qS * (CL0 - d.CD_alpha) / (mass * V)
-    Zu = -qS * (2.0 * CL0) / (mass * V)
-    Zw = -qS * (d.CL_alpha + CD0) / (mass * V)
-    Zq = -qS * c * d.CL_q / (2.0 * mass * V)
-    Zwdot = -qS * c * d.CL_alphadot / (2.0 * mass * V**2)
+    Xu = -qS * (2.0 * CD0) / (m_x * V) + thrust_dT_dV / m_x
+    Xw = qS * (CL0 - d.CD_alpha) / (m_x * V)
+    Zu = -qS * (2.0 * CL0) / (m_z * V)
+    Zw = -qS * (d.CL_alpha + CD0) / (m_z * V)
+    Zq = -qS * c * d.CL_q / (2.0 * m_z * V)
+    Zwdot = -qS * c * d.CL_alphadot / (2.0 * m_z * V**2)
     Mu = thrust_dM_dV / Iyy
     Mw = qS * c * d.Cm_alpha / (Iyy * V)
     Mq = qS * c**2 * d.Cm_q / (2.0 * Iyy * V)
@@ -1094,7 +1188,7 @@ def longitudinal_modes(
 
     A = np.array(
         [
-            [Xu, Xw, 0.0, -G0],
+            [Xu, Xw, 0.0, -G0 * mass / m_x],
             [Zu / (1.0 - Zwdot), Zw / (1.0 - Zwdot),
              (Zq + V) / (1.0 - Zwdot), 0.0],
             [
@@ -1165,6 +1259,7 @@ def lateral_modes(
     derivs: Optional[Derivatives] = None,
     S_ref: Optional[float] = None,
     b_ref: Optional[float] = None,
+    apparent: Optional[ApparentMass] = None,
     **kwargs,
 ) -> Modes:
     """Dutch roll, roll subsidence and spiral modes.
@@ -1213,9 +1308,13 @@ def lateral_modes(
     S, b = float(S_ref), float(b_ref)
     qS = q_bar * S
 
-    Yv = qS * d.CY_beta / (mass * V)
-    Yp = qS * b * d.CY_p / (2.0 * mass * V)
-    Yr = qS * b * d.CY_r / (2.0 * mass * V)
+    m_y = mass + (apparent.m_y if apparent else 0.0)
+    if apparent is not None:
+        Ixx, Izz, Ixz = Ixx + apparent.Ixx, Izz + apparent.Izz, Ixz + apparent.Ixz
+
+    Yv = qS * d.CY_beta / (m_y * V)
+    Yp = qS * b * d.CY_p / (2.0 * m_y * V)
+    Yr = qS * b * d.CY_r / (2.0 * m_y * V)
     Lv = qS * b * d.Cl_beta / (Ixx * V)
     Lp = qS * b**2 * d.Cl_p / (2.0 * Ixx * V)
     Lr = qS * b**2 * d.Cl_r / (2.0 * Ixx * V)
@@ -1232,7 +1331,7 @@ def lateral_modes(
 
     A = np.array(
         [
-            [Yv, Yp, Yr - V, G0],
+            [Yv, Yp, Yr - V, G0 * mass / m_y],
             [Lv, Lp, Lr, 0.0],
             [Nv, Np, Nr, 0.0],
             [0.0, 1.0, 0.0, 0.0],

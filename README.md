@@ -9,6 +9,8 @@ The package includes section aerodynamics, a vortex-lattice method, drag buildup
 and trim, electric-propulsion matching, aircraft performance, flight loads, simple spar
 sizing, plotting helpers, and a small aircraft/component catalog.
 
+This package has been co-authored with Codex (ChatGPT) and Claude.
+
 ## Students: start here
 
 Students do not need to install Git, Python, or an environment manager.
@@ -33,6 +35,8 @@ FlightLab.
 
 See the [student setup and instructor release notes](student_setup/README.md) for troubleshooting
 and the weekly update procedure.
+The lattice, trim, and dynamic modes are checked against AVL; see
+[docs/avl-verification.md](docs/avl-verification.md).
 
 ## Developer and advanced local installation
 

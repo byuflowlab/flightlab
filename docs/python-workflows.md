@@ -105,6 +105,7 @@ Use the project-level functions for a saved workbench aircraft:
 | span load and preliminary two-cap spar sizing | `analyze_structure` | `ProjectStructuralAnalysis` |
 | motor/propeller/battery match over speed | `analyze_propulsion` | `PropulsionAnalysis` |
 | stability derivatives from every lifting surface (mirrored solve) | `derivatives` | `stability.Derivatives` |
+| apparent mass and inertia of the surrounding air | `apparent_mass` | `stability.ApparentMass` |
 | linear longitudinal and lateral modes | `analyze_dynamic_stability` | `DynamicStability` |
 
 ```python
