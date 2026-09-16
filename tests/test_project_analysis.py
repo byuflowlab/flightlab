@@ -120,7 +120,7 @@ def test_propulsion_and_dynamic_stability_are_project_analyses():
     modes = analyze_dynamic_stability(project, ns=12, nc=3)
     assert len(modes.longitudinal) > 0
     assert len(modes.lateral) > 0
-    assert modes.warnings
+    assert modes.notes and not modes.warnings
     assert modes.body_increments["Cm_alpha"] > 0
     assert modes.body_increments["Cn_beta"] != 0
     assert modes.propulsion_increments.dT_dV < 0

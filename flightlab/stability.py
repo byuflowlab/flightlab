@@ -957,10 +957,16 @@ class Mode:
     name : str
     eigenvalue : complex
         1/s.
+    partner : complex, optional
+        For a mode that has split into two real roots (an overdamped short
+        period, say), the other root of the pair.  The pair then reports the
+        equivalent natural frequency and damping ratio of the second-order
+        system it came from, which is what a designer compares against limits.
     """
 
     name: str
     eigenvalue: complex
+    partner: Optional[complex] = None
 
     @property
     def real(self) -> float:
@@ -977,14 +983,20 @@ class Mode:
 
     @property
     def frequency(self) -> float:
-        """Undamped natural frequency, rad/s."""
+        """Undamped natural frequency, rad/s (of the pair, for a split real pair)."""
+        if self.partner is not None:
+            return float(np.sqrt(abs(self.eigenvalue * self.partner)))
         return float(abs(self.eigenvalue))
 
     @property
     def damping(self) -> float:
-        """Damping ratio.  Negative means the mode grows."""
+        """Damping ratio.  Negative means the mode grows; above one, the pair is overdamped."""
         w = self.frequency
-        return float(-self.real / w) if w > 1e-12 else float("nan")
+        if w <= 1e-12:
+            return float("nan")
+        if self.partner is not None:
+            return float(-(self.eigenvalue + self.partner).real / (2.0 * w))
+        return float(-self.real / w)
 
     @property
     def period(self) -> float:
@@ -1236,9 +1248,11 @@ def _name_longitudinal(vals) -> Tuple[Mode, ...]:
             pair_name = "short period" if abs(pair.imag) > 0.5 else "phugoid"
             real_name = "longitudinal"
         modes = [Mode(pair_name, complex(pair))]
+        ordered = sorted(real, key=lambda z: z.real)
+        split = real_name != "longitudinal"
         modes += [
-            Mode(f"{real_name} {i + 1}", complex(v))
-            for i, v in enumerate(sorted(real, key=lambda z: z.real))
+            Mode(f"{real_name} {i + 1}", complex(v), partner=complex(ordered[1 - i]) if split else None)
+            for i, v in enumerate(ordered)
         ]
         return tuple(modes)
     return tuple(
@@ -1353,8 +1367,8 @@ def _name_lateral(vals) -> Tuple[Mode, ...]:
     if not osc and len(real) == 4:
         # No oscillation at all: the dutch roll has split into two real roots.
         # Say so rather than calling three roots the spiral.
-        out.append(Mode("dutch roll (real root) 1", complex(real[1])))
-        out.append(Mode("dutch roll (real root) 2", complex(real[2])))
+        out.append(Mode("dutch roll (real root) 1", complex(real[1]), partner=complex(real[2])))
+        out.append(Mode("dutch roll (real root) 2", complex(real[2]), partner=complex(real[1])))
         out.append(Mode("spiral", complex(real[3])))
     else:
         for v in real[1:]:

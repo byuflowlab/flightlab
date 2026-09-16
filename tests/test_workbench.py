@@ -421,3 +421,15 @@ def test_an_opened_project_keeps_the_file_name_it_was_opened_from():
     # A starter or example is named after the aircraft again.
     workbench._load_project(blank_project())
     assert workbench.project_filename.value == "untitled_aircraft.flightlab.json"
+
+
+def test_dynamics_tab_shows_numbers_not_modelling_caveats():
+    workbench = Workbench()
+    workbench.analysis_ns.value, workbench.analysis_nc.value = 12, 3
+    workbench.run_dynamic_stability()
+    assert workbench.status.alert_type == "success"
+    assert not workbench.dynamics_warnings.visible
+    table = workbench.mode_table.value
+    assert "natural frequency [rad/s]" in table.columns
+    short = table[table["mode"].str.startswith("short period")]
+    assert short["damping ratio"].notna().all()

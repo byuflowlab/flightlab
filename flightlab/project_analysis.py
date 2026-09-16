@@ -104,7 +104,8 @@ class DesignPoint:
     CD_total: float
     drag: float
     lift_to_drag: float
-    warnings: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()  # about this design: things the student can act on
+    notes: Tuple[str, ...] = ()  # about the model: fixed assumptions, for reports and scripts
 
 
 @dataclass(frozen=True)
@@ -216,8 +217,9 @@ class DynamicStability:
     derivatives: stability.Derivatives
     body_increments: Dict[str, float]
     propulsion_increments: Optional[PropulsionDerivatives]
-    warnings: Tuple[str, ...] = ()
+    warnings: Tuple[str, ...] = ()  # about this design
     apparent_mass: Optional[stability.ApparentMass] = None
+    notes: Tuple[str, ...] = ()  # about the model
 
 
 CENTERLINE_TOLERANCE = 1e-9
@@ -698,16 +700,16 @@ def run_design_point(
     q = atmos.at(case.altitude).q(case.speed)
     S_ref, _, _ = project.reference_quantities()
     drag_force = CD_total * q * S_ref
-    warnings = [
+    notes = [
         "Surface profile drag integrates local airfoil cd(cl, Re) over every VLM strip; body drag uses empirical component correlations.",
         "Static body pitching effects use a slender-body correction; no coupled body-panel solution is used.",
     ]
     if any(surface.trim_control == "elevator" for surface in project.trim_surfaces):
-        warnings.append(
+        notes.append(
             "Elevator deflection changes VLM camber aft of the hinge; profile drag still uses the "
             "clean section polar and does not include hinge-gap or control-surface drag."
         )
-    warnings.extend(f"No drag geometry for {name}." for name in buildup.skipped)
+    warnings = [f"No drag geometry for {name}." for name in buildup.skipped]
     return DesignPoint(
         project_name=project.name,
         case=case,
@@ -718,6 +720,7 @@ def run_design_point(
         drag=float(drag_force),
         lift_to_drag=float(trimmed.solution.CL / CD_total),
         warnings=tuple(warnings),
+        notes=tuple(notes),
     )
 
 
@@ -1476,7 +1479,7 @@ def analyze_dynamic_stability(
         Ixx=mp.Ixx, Izz=mp.Izz, Ixz=mp.Ixz, x_cg=mp.x_cg,
         derivs=corrected, S_ref=S_ref, b_ref=b_ref, apparent=added,
     )
-    warnings = [
+    notes = [
         "Lifting-surface derivatives come from a mirrored vortex-lattice solve of every surface at the "
         "design-point trim; the alpha-dot terms are a lagged-downwash tail-volume estimate.",
         f"Apparent mass of the surrounding air is included, as in AVL: {added.m_z / mp.mass:.0%} of the "
@@ -1491,5 +1494,5 @@ def analyze_dynamic_stability(
     return DynamicStability(
         longitudinal=longitudinal, lateral=lateral, derivatives=corrected,
         body_increments=body, propulsion_increments=power,
-        warnings=tuple(warnings), apparent_mass=added,
+        warnings=(), apparent_mass=added, notes=tuple(notes),
     )

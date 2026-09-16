@@ -2395,9 +2395,6 @@ class Workbench:
             for row in result.buildup.rows
         ])
         warnings = list(result.warnings)
-        warnings.append(
-            "The CLmax estimate holds the trimmed pitch-control deflection fixed and combines linear VLM loading with NeuralFoil section limits; it does not model post-stall redistribution."
-        )
         if not stall["reached"]:
             warnings.append(
                 "No section reached its local clmax by the highest swept angle; the reported aircraft CLmax is a lower bound."
@@ -2677,18 +2674,12 @@ class Workbench:
             fig.tight_layout()
             self._replace_figure(self.loads_plots, fig)
 
-            warnings = [
-                "The structural VLM solve holds pitch-control deflection at zero and is linear about the solved load case.",
-                "Distributed structural/fuel/battery mass is not yet applied as inertial relief, so the root moment is conservative when substantial mass lies in the wing.",
-                "The two-cap beam omits web sizing, buckling, joints, local loads, fatigue, aeroelasticity, and material knockdowns. The deflection uses cap stiffness only.",
-            ]
-            if envelope_mode:
-                warnings.insert(0, "The optional V–n envelope uses the aircraft reference area; the structural results are for the selected lifting surface.")
-                if design_n > envelope["n_pos"]:
-                    warnings.insert(0, "The structural design factor exceeds the entered positive limit load factor.")
+            warnings = []
+            if envelope_mode and design_n > envelope["n_pos"]:
+                warnings.append("The structural design factor exceeds the entered positive limit load factor.")
             self.loads_warnings.object = "\n".join(f"• {item}" for item in warnings)
             self.loads_warnings.alert_type = "warning"
-            self.loads_warnings.visible = True
+            self.loads_warnings.visible = bool(warnings)
             self.status.object = f"Completed loads and spar sizing for {surface.name}."
             self.status.alert_type = "success"
         except Exception as exc:
@@ -2819,11 +2810,13 @@ class Workbench:
             rows = []
             for family, modes in (("longitudinal", result.longitudinal), ("lateral", result.lateral)):
                 for mode in modes:
+                    second_order = mode.oscillatory or mode.partner is not None
                     rows.append({
                         "family": family, "mode": mode.name,
                         "real [1/s]": mode.real, "imag [1/s]": mode.imag,
                         "period [s]": mode.period if np.isfinite(mode.period) else None,
-                        "damping ratio": mode.damping if mode.oscillatory else None,
+                        "natural frequency [rad/s]": mode.frequency if second_order else None,
+                        "damping ratio": mode.damping if second_order else None,
                         "half/double time [s]": mode.time_to_half,
                         "stable": mode.stable,
                     })
@@ -2861,7 +2854,7 @@ class Workbench:
             fig.tight_layout()
             self._replace_figure(self.dynamics_plot, fig)
             self.dynamics_warnings.object = "\n".join(f"• {item}" for item in result.warnings)
-            self.dynamics_warnings.visible = True
+            self.dynamics_warnings.visible = bool(result.warnings)
             self.dynamics_warnings.alert_type = "warning"
             self._dynamics_displayed = True
             self.status.object = f"Completed dynamic stability analysis for {case.name}."

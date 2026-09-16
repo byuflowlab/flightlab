@@ -58,7 +58,8 @@ def test_dynamic_modes_include_the_fourth_surface_and_carry_no_adapter_caveats()
     m1 = analyze_dynamic_stability(with_ventral, ns=10, nc=3)
     assert m1.derivatives.Cn_beta > m0.derivatives.Cn_beta
     assert len(m1.lateral) == 3 and len(m1.longitudinal) >= 2
-    assert not any("equivalent" in item or "adapter" in item for item in m1.warnings)
+    assert not any("equivalent" in item or "adapter" in item for item in m1.notes)
+    assert m1.warnings == ()
     # Body increments sit on the project's own reference quantities.
     assert m0.body_increments["Cm_alpha"] > 0
 
@@ -160,3 +161,20 @@ def test_pitch_stiffness_with_a_tail_near_the_wake_is_converged_at_workbench_pan
     fine = derivatives(project, alpha=2.0, x_ref=0.12, ns=56, nc=4).Cm_alpha
     assert abs(normal - fine) < 0.005 * abs(fine)
     assert abs(coarse - fine) < 0.025 * abs(fine)
+
+
+def test_split_real_pairs_report_the_equivalent_frequency_and_damping():
+    """The starters' short period is just past critical damping; the two real
+    roots report the second-order pair they came from, not bare time constants."""
+    import numpy as np
+    from flightlab.project import blank_project
+
+    modes = analyze_dynamic_stability(blank_project(), ns=12, nc=3).longitudinal
+    split = [m for m in modes if m.partner is not None]
+    assert len(split) == 2 and all(m.name.startswith("short period") for m in split)
+    first, second = split
+    assert first.frequency == pytest.approx(second.frequency)
+    assert first.damping == pytest.approx(second.damping)
+    assert first.frequency == pytest.approx(np.sqrt(first.real * second.real), rel=1e-9)
+    assert 1.0 < first.damping < 1.3
+    assert not first.oscillatory

@@ -154,7 +154,8 @@ outputs are:
 | static margin | `point.trim.static_margin` | chord fraction |
 | mass and CG | `point.mass_properties.mass`, `.x_cg`, `.y_cg`, `.z_cg` | kg, m |
 | component drag buildup | `point.buildup.rows` or `.table()` | rows or printable text |
-| model warnings | `point.warnings` | strings |
+| warnings about this design (skipped drag geometry, limits) | `point.warnings` | strings |
+| notes on the model's fixed assumptions | `point.notes` | strings |
 
 ```python
 print(point.mass_properties.table())
@@ -167,6 +168,8 @@ print(f"L/D = {point.lift_to_drag:.2f}")
 
 for warning in point.warnings:
     print("WARNING:", warning)
+for note in point.notes:
+    print("NOTE:", note)
 ```
 
 The sweep results carry NumPy arrays ready to plot:
@@ -190,7 +193,27 @@ Useful nested results include:
 - `power.speed`, `thrust_available`, `drag_required`, `current`, `rpm`,
   efficiency and power arrays, plus `power.extrapolated`;
 - `modes.longitudinal.table()`, `modes.lateral.table()`,
-  `modes.derivatives.table()`, and `modes.warnings`.
+  `modes.derivatives.table()`, `modes.warnings`, and `modes.notes`.
+
+## Model assumptions the workbench does not repeat
+
+The workbench shows only messages a student can act on. The fixed assumptions
+behind each analysis are returned as `notes` on the design-point and
+dynamic-stability results, and the structural ones are listed here:
+
+- The structural lattice solve holds pitch-control deflection at zero and is
+  linear about the solved load case.
+- Distributed structural, fuel, and battery mass is not applied as inertial
+  relief, so the root bending moment is conservative when much of the mass is
+  in the wing.
+- The two-cap spar idealisation omits web sizing, buckling, joints, local
+  loads, fatigue, aeroelasticity, and material knockdowns; the deflection uses
+  cap stiffness only.
+- The optional V-n envelope uses the aircraft reference area; the structural
+  results are for the selected lifting surface.
+- The aircraft CLmax estimate holds the trimmed pitch-control deflection fixed
+  and combines linear lattice loading with NeuralFoil section limits; it does
+  not model post-stall redistribution.
 
 Python can list every field on any result without relying on this page:
 
