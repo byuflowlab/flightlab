@@ -1127,12 +1127,24 @@ def _name_longitudinal(vals) -> Tuple[Mode, ...]:
                     break
         return tuple(out)
     if len(osc) == 2:
+        # One oscillatory pair and two real roots.  On a light model with a
+        # small pitch inertia the short period is often overdamped: two fast
+        # real roots, with the slow pair being the phugoid.  Decide by speed
+        # rather than by an absolute frequency: whichever is faster is the
+        # short period.
         real = vals[np.abs(vals.imag) <= 1e-9]
         pair = osc[np.argmax(osc.imag)]
-        name = "short period" if abs(pair.imag) > 0.5 else "phugoid"
-        modes = [Mode(name, complex(pair))]
+        if all(abs(v.real) > abs(pair) for v in real):
+            pair_name, real_name = "phugoid", "short period (real root)"
+        elif all(abs(v.real) < abs(pair) for v in real):
+            pair_name, real_name = "short period", "phugoid (real root)"
+        else:
+            pair_name = "short period" if abs(pair.imag) > 0.5 else "phugoid"
+            real_name = "longitudinal"
+        modes = [Mode(pair_name, complex(pair))]
         modes += [
-            Mode(f"longitudinal {i + 1}", complex(v)) for i, v in enumerate(real)
+            Mode(f"{real_name} {i + 1}", complex(v))
+            for i, v in enumerate(sorted(real, key=lambda z: z.real))
         ]
         return tuple(modes)
     return tuple(
@@ -1239,8 +1251,15 @@ def _name_lateral(vals) -> Tuple[Mode, ...]:
         out.append(Mode("dutch roll", complex(max(osc, key=lambda z: z.imag))))
     if real:
         out.append(Mode("roll subsidence", complex(real[0])))
-    for v in real[1:]:
-        out.append(Mode("spiral", complex(v)))
+    if not osc and len(real) == 4:
+        # No oscillation at all: the dutch roll has split into two real roots.
+        # Say so rather than calling three roots the spiral.
+        out.append(Mode("dutch roll (real root) 1", complex(real[1])))
+        out.append(Mode("dutch roll (real root) 2", complex(real[2])))
+        out.append(Mode("spiral", complex(real[3])))
+    else:
+        for v in real[1:]:
+            out.append(Mode("spiral", complex(v)))
     if not out:  # pragma: no cover
         out = [Mode(f"lateral {i}", complex(v)) for i, v in enumerate(vals)]
     return tuple(out)

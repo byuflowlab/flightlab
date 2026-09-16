@@ -1072,7 +1072,9 @@ def blank_project() -> AircraftProject:
                 "fuselage structure estimate", 0.18,
                 distributed="body_volume", attached_to="fuselage",
             ),
-            MassItem("payload, avionics, and installation hardware", 0.176, 0.10),
+            # In the nose, ahead of the wing: this puts the starter's centre of
+            # gravity about ten per cent of the chord ahead of its neutral point.
+            MassItem("payload, avionics, and installation hardware", 0.176, 0.00),
         ],
         cases=[FlightCase("Cruise", 12.0, altitude=1400.0, protuberance=0.10)],
     )
@@ -1092,6 +1094,9 @@ def example_project() -> AircraftProject:
         SurfaceStation(0.07, 0.58, 0.03, 0.27, 0.5, "sd7037"),
         SurfaceStation(0.16, 0.86, 0.07, 0.16, -1.5, "sd7037"),
     ]
+    # The wider centre section moves the neutral point forward, so the payload
+    # sits a little further into the nose for a similar static margin.
+    project.masses[2].x = -0.03
     project.cases.extend([
         FlightCase("Takeoff", 9.0, altitude=1400.0, protuberance=0.10),
         FlightCase("Maneuver", 16.0, altitude=1400.0, load_factor=3.0, protuberance=0.10),
