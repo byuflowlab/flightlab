@@ -104,6 +104,7 @@ Use the project-level functions for a saved workbench aircraft:
 | whole-aircraft alpha sweep at fixed control deflection | `aircraft_polar` | `AircraftPolar` |
 | span load and preliminary two-cap spar sizing | `analyze_structure` | `ProjectStructuralAnalysis` |
 | motor/propeller/battery match over speed | `analyze_propulsion` | `PropulsionAnalysis` |
+| stability derivatives from every lifting surface (mirrored solve) | `derivatives` | `stability.Derivatives` |
 | linear longitudinal and lateral modes | `analyze_dynamic_stability` | `DynamicStability` |
 
 ```python

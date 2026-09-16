@@ -278,15 +278,24 @@ def body_pitching_moment(aircraft: Aircraft, panel: Optional[Panel] = None) -> f
     number, and the sign is not in doubt.
     """
     w = panel or geom.resolve(aircraft.wing)
+    return body_pitching_slope(aircraft.bodies, w.area, w.mac)
+
+
+def body_pitching_slope(bodies, S_ref: float, c_ref: float) -> float:
+    """``dCm/dalpha`` from a sequence of bodies on the given reference area and chord.
+
+    The same Munk estimate as :func:`body_pitching_moment`, for callers that
+    carry their own reference quantities rather than a fleet aircraft.
+    """
     total = 0.0
-    for body in aircraft.bodies:
+    for body in bodies:
         try:
             f = body.fineness
         except ValueError:
             continue
         d = body.length / f
         volume = 0.7 * (np.pi / 4.0) * d**2 * body.length * body.count
-        total += 2.0 * volume / (w.area * w.mac)
+        total += 2.0 * volume / (S_ref * c_ref)
     return float(total)
 
 
@@ -305,13 +314,20 @@ def body_derivatives(aircraft: Aircraft, x_cg: Optional[float] = None) -> Dict[s
             x_cg = mass_properties(aircraft).x_cg
         except ValueError:
             x_cg = w.x_c4_mac
+    return body_derivative_increments(aircraft.bodies, w.area, w.span, w.mac, x_cg)
+
+
+def body_derivative_increments(
+    bodies, S_ref: float, b_ref: float, c_ref: float, x_cg: float,
+) -> Dict[str, float]:
+    """The :func:`body_derivatives` increments for bodies on explicit reference quantities."""
     values = {
-        "Cm_alpha": body_pitching_moment(aircraft, w),
+        "Cm_alpha": body_pitching_slope(bodies, S_ref, c_ref),
         "CY_beta": 0.0, "Cl_beta": 0.0, "Cn_beta": 0.0,
         "CY_p": 0.0, "CY_r": 0.0, "Cl_p": 0.0,
         "Cn_p": 0.0, "Cl_r": 0.0, "Cn_r": 0.0,
     }
-    for body in aircraft.bodies:
+    for body in bodies:
         diameter = body.diameter if body.diameter is not None else body.width
         height = body.height if body.height is not None else diameter
         width = body.width if body.width is not None else diameter
@@ -328,10 +344,10 @@ def body_derivatives(aircraft: Aircraft, x_cg: Optional[float] = None) -> Dict[s
         scale = np.clip(scale, 0.0, 1.0)
         x0 = body.x_nose or 0.0
         x = x0 + u * body.length
-        lever = (x - x_cg) / w.span
-        zbar = float(getattr(body, "z", 0.0)) / w.span
+        lever = (x - x_cg) / b_ref
+        zbar = float(getattr(body, "z", 0.0)) / b_ref
         # Crossflow side-force slope on each projected side-area strip.
-        dcy = -2.0 * height * scale * (body.length / n) * body.count / w.area
+        dcy = -2.0 * height * scale * (body.length / n) * body.count / S_ref
         values["CY_beta"] += float(np.sum(dcy))
         values["Cl_beta"] += float(np.sum(-zbar * dcy))
         values["Cn_beta"] += float(np.sum(lever * dcy))
@@ -346,7 +362,7 @@ def body_derivatives(aircraft: Aircraft, x_cg: Optional[float] = None) -> Dict[s
             np.pi * width * height / 4.0 * body.length
             * (1.0 - 2.0 * cone / 3.0) * body.count
         )
-        values["Cn_beta"] -= 2.0 * volume / (w.area * w.span)
+        values["Cn_beta"] -= 2.0 * volume / (S_ref * b_ref)
     return {key: float(value) for key, value in values.items()}
 
 
@@ -743,9 +759,17 @@ def alpha_dot_derivatives(
         return 0.0, 0.0
     tv = tail_volume(aircraft)
     w = geom.resolve(aircraft.wing)
-    V_h = tv.get("V_h", 0.0)
+    return alpha_dot_from_tail_volume(
+        tv.get("V_h", 0.0), tv.get("l_h", 0.0), w.mac, CL_alpha_tail, downwash
+    )
+
+
+def alpha_dot_from_tail_volume(
+    V_h: float, l_h: float, c_ref: float, CL_alpha_tail: float = 4.5, downwash: float = 0.4,
+) -> Tuple[float, float]:
+    """The :func:`alpha_dot_derivatives` estimate for one aft surface's tail volume and arm."""
     CL_ad = 2.0 * CL_alpha_tail * V_h * downwash
-    Cm_ad = -CL_ad * tv.get("l_h", 0.0) / w.mac
+    Cm_ad = -CL_ad * l_h / c_ref
     return float(CL_ad), float(Cm_ad)
 
 
@@ -972,7 +996,7 @@ class Modes:
 
 
 def longitudinal_modes(
-    aircraft: Aircraft,
+    aircraft: Optional[Aircraft],
     V: float,
     altitude: float = 0.0,
     mass: Optional[float] = None,
@@ -981,6 +1005,8 @@ def longitudinal_modes(
     derivs: Optional[Derivatives] = None,
     thrust_dT_dV: float = 0.0,
     thrust_dM_dV: float = 0.0,
+    S_ref: Optional[float] = None,
+    c_ref: Optional[float] = None,
     **kwargs,
 ) -> Modes:
     """Phugoid and short-period modes.
@@ -997,6 +1023,10 @@ def longitudinal_modes(
         Default to the component table.
     derivs : Derivatives, optional
         Reuse a derivative set rather than re-solving.
+    S_ref, c_ref : float, optional
+        Reference area and chord the derivatives are on.  Default to the
+        aircraft's wing; pass them (and ``derivs``, ``mass``, ``Iyy``,
+        ``x_cg``) to use this function without a fleet aircraft at all.
     **kwargs
         Passed to :func:`derivatives`.
 
@@ -1025,10 +1055,13 @@ def longitudinal_modes(
     Iyy = mp.Iyy if Iyy is None else Iyy
     x_cg = mp.x_cg if x_cg is None else x_cg
 
-    w_panel = geom.resolve(aircraft.wing)
+    if S_ref is None or c_ref is None:
+        w_panel = geom.resolve(aircraft.wing)
+        S_ref = w_panel.area if S_ref is None else S_ref
+        c_ref = w_panel.mac if c_ref is None else c_ref
     air = atmos.at(altitude)
     q_bar = air.q(V)
-    S, c = w_panel.area, w_panel.mac
+    S, c = float(S_ref), float(c_ref)
 
     # steady level flight: the reference lift carries the weight.  This is not
     # a modelling choice, it is the definition of the condition the modes are
@@ -1109,7 +1142,7 @@ def _name_longitudinal(vals) -> Tuple[Mode, ...]:
 
 
 def lateral_modes(
-    aircraft: Aircraft,
+    aircraft: Optional[Aircraft],
     V: float,
     altitude: float = 0.0,
     mass: Optional[float] = None,
@@ -1118,6 +1151,8 @@ def lateral_modes(
     Ixz: Optional[float] = None,
     x_cg: Optional[float] = None,
     derivs: Optional[Derivatives] = None,
+    S_ref: Optional[float] = None,
+    b_ref: Optional[float] = None,
     **kwargs,
 ) -> Modes:
     """Dutch roll, roll subsidence and spiral modes.
@@ -1133,7 +1168,9 @@ def lateral_modes(
     double, not its sign.
 
     Requires lateral derivatives, so :func:`derivatives` is called with
-    ``lateral=True`` and a mirrored model.
+    ``lateral=True`` and a mirrored model.  ``S_ref`` and ``b_ref`` default to
+    the aircraft's wing; pass them, with ``derivs`` and the mass properties,
+    to use this function without a fleet aircraft.
     """
     mp = None
     if any(v is None for v in (mass, Ixx, Izz, Ixz, x_cg)):
@@ -1155,10 +1192,13 @@ def lateral_modes(
             "value in them is exactly zero; re-run derivatives(lateral=True)"
         )
 
-    w = geom.resolve(aircraft.wing)
+    if S_ref is None or b_ref is None:
+        w = geom.resolve(aircraft.wing)
+        S_ref = w.area if S_ref is None else S_ref
+        b_ref = w.span if b_ref is None else b_ref
     air = atmos.at(altitude)
     q_bar = air.q(V)
-    S, b = w.area, w.span
+    S, b = float(S_ref), float(b_ref)
     qS = q_bar * S
 
     Yv = qS * d.CY_beta / (mass * V)

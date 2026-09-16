@@ -29,6 +29,7 @@ from .vlm import (
     steady_analysis,
     wing_to_grid,
 )
+from .vlm.geometry import _mirror_grid
 
 __all__ = [
     "ProjectTrim",
@@ -206,7 +207,7 @@ class PropulsionDerivatives:
 
 @dataclass(frozen=True)
 class DynamicStability:
-    """Linear modes from the project's mass model and equivalent surfaces."""
+    """Linear modes from the project's mass model and every lifting surface."""
 
     longitudinal: stability.Modes
     lateral: stability.Modes
@@ -295,6 +296,11 @@ def _grid_for_surface(
         spacing_s=Cosine(),
         spacing_c=Uniform(),
     )
+
+
+def _bodies(project: AircraftProject):
+    """The project's bodies as library bodies, for the empirical body models."""
+    return [body.to_body() for body in project.bodies]
 
 
 def _longitudinal_surfaces(project: AircraftProject) -> List[LiftingSurface]:
@@ -406,8 +412,8 @@ def _solution(
         CD_i=CD_i,
         CY=CY,
         Cl=float(CM[0]),
-        Cm=float(CM[1]) + stability.body_pitching_moment(
-            project.equivalent_aircraft()
+        Cm=float(CM[1]) + stability.body_pitching_slope(
+            _bodies(project), S_ref, c_ref
         ) * np.radians(alpha),
         Cn=float(CM[2]),
         e_inv=float(e_inv),
@@ -468,7 +474,7 @@ def neutral_point(
     )
     dCF, dCM = stability_derivatives(system)
     CL_alpha = float(dCF["alpha"][2])
-    body_increment = stability.body_pitching_moment(project.equivalent_aircraft())
+    body_increment = stability.body_pitching_slope(_bodies(project), S_ref, c_ref)
     Cm_alpha = float(dCM["alpha"][1]) + body_increment
     if abs(CL_alpha) < 1e-12:
         raise ValueError("neutral point is undefined because CL_alpha is zero")
@@ -1165,6 +1171,94 @@ def propulsion_derivatives(
     )
 
 
+def _alpha_dot_derivatives(project: AircraftProject, x_cg: float) -> Tuple[float, float]:
+    """Lagged-downwash ``CL_alphadot`` and ``Cm_alphadot`` from every aft surface.
+
+    The steady lattice cannot produce these, so each surface behind the primary
+    surface contributes the standard tail-volume estimate.  Surfaces ahead of
+    it (canards) and fins, which carry no pitch load, are left out.
+    """
+    S_ref, _, c_ref = project.reference_quantities()
+    primary = project.primary_surface
+    CL_ad = Cm_ad = 0.0
+    for surface in project.surfaces:
+        if surface is primary or surface.is_vertical:
+            continue
+        arm = surface.aerodynamic_center_x - x_cg
+        if arm <= 0.0:
+            continue
+        volume = surface.area * arm / (S_ref * c_ref)
+        dCL, dCm = stability.alpha_dot_from_tail_volume(volume, arm, c_ref)
+        CL_ad += dCL
+        Cm_ad += dCm
+    return CL_ad, Cm_ad
+
+
+def derivatives(
+    project: AircraftProject,
+    case: Optional[FlightCase] = None,
+    alpha: Optional[float] = None,
+    trim_deflection: float = 0.0,
+    x_ref: Optional[float] = None,
+    ns: int = 22,
+    nc: int = 4,
+) -> stability.Derivatives:
+    """Longitudinal and lateral stability derivatives from every lifting surface.
+
+    Each surface is meshed from its own stations with the entered control
+    deflection, mirrored surfaces are built explicitly on both sides, and the
+    whole set is solved without a symmetry condition so sideslip and the roll
+    and yaw rates produce real lateral derivatives.  There is no limit on the
+    number of surfaces and no role assignment: a biplane, a canard plus a tail,
+    twin fins, and a ventral fin all enter as drawn.  Moments are about
+    ``x_ref``, which defaults to the centre of gravity.
+    """
+    case = project.case() if case is None else case
+    project.require_valid()
+    alpha = case.alpha_deg if alpha is None else float(alpha)
+    if x_ref is None:
+        x_ref = stability.mass_properties(project.components()).x_cg
+    x_ref = float(x_ref)
+    S_ref, b_ref, c_ref = project.reference_quantities()
+    grids, ratios = [], []
+    for surface in project.surfaces:
+        surface_ns = max(8, int(round(ns * surface.span / b_ref)))
+        control = trim_deflection if surface.trim_control != "fixed" else 0.0
+        grid, ratio = _grid_for_surface(project, surface, surface_ns, nc, control)
+        if surface.symmetric:
+            grid, ratio = _mirror_grid(grid, ratio, grid[1].ravel())
+        grids.append(grid)
+        ratios.append(ratio)
+    reference = Reference(S_ref, c_ref, b_ref, [x_ref, 0.0, 0.0], case.speed)
+    fs = Freestream.from_degrees(case.speed, alpha=alpha)
+    system = steady_analysis(
+        grids, reference, fs, symmetric=False, ratios=ratios, derivatives=True,
+    )
+    CF, CM = body_forces(system, frame=Stability())
+    dCF, dCM = stability_derivatives(system)
+    CL_ad, Cm_ad = _alpha_dot_derivatives(project, x_ref)
+    return stability.Derivatives(
+        CL=float(CF[2]), CD=float(CF[0]), Cm=float(CM[1]),
+        CL_alpha=float(dCF["alpha"][2]),
+        CD_alpha=float(dCF["alpha"][0]),
+        Cm_alpha=float(dCM["alpha"][1]),
+        CL_q=float(dCF["q"][2]),
+        Cm_q=float(dCM["q"][1]),
+        CY_beta=float(dCF["beta"][1]),
+        Cl_beta=float(dCM["beta"][0]),
+        Cn_beta=float(dCM["beta"][2]),
+        Cl_p=float(dCM["p"][0]),
+        Cn_p=float(dCM["p"][2]),
+        Cl_r=float(dCM["r"][0]),
+        Cn_r=float(dCM["r"][2]),
+        CY_p=float(dCF["p"][1]),
+        CY_r=float(dCF["r"][1]),
+        CL_alphadot=CL_ad,
+        Cm_alphadot=Cm_ad,
+        lateral_valid=True,
+    )
+
+
 def analyze_dynamic_stability(
     project: AircraftProject,
     case: Optional[FlightCase] = None,
@@ -1173,71 +1267,62 @@ def analyze_dynamic_stability(
 ) -> DynamicStability:
     """Compute longitudinal and lateral linear modes for a project.
 
-    This first workbench implementation uses equivalent single-trapezoid
-    surfaces because the existing mirrored derivative solver consumes the
-    legacy aircraft adapter. Area, span, MAC, placement, sweep, twist, mass,
-    CG, and inertia are retained. Body and propulsion increments are then
-    added with the documented empirical models; station breaks are not retained.
+    The derivatives come from :func:`derivatives`, so every lifting surface
+    enters from its stations at the integrated design point's trim.  Body and
+    propulsion increments are then added with the documented empirical models.
     """
     case = project.case() if case is None else case
     project.require_valid()
-    aircraft = project.equivalent_aircraft()
     mp = stability.mass_properties(project.components())
-    trimmed = stability.trim(
-        aircraft, case.speed, case.altitude, mass=mp.mass, x_cg=mp.x_cg,
-        ns=ns, nc=nc, include_body=True,
-    )
-    derivatives = stability.derivatives(
-        aircraft, case.speed, case.altitude, alpha=trimmed.alpha,
-        x_cg=mp.x_cg, tail_incidence_deg=trimmed.tail_incidence,
-        ns=ns, nc=nc, lateral=True,
-    )
-    body = stability.body_derivatives(aircraft, mp.x_cg)
+    S_ref, b_ref, c_ref = project.reference_quantities()
     design = run_design_point(project, case, ns=ns, nc=nc)
+    trimmed = design.trim
+    base = derivatives(
+        project, case, alpha=trimmed.alpha, trim_deflection=trimmed.trim_deflection,
+        x_ref=mp.x_cg, ns=ns, nc=nc,
+    )
+    body = stability.body_derivative_increments(_bodies(project), S_ref, b_ref, c_ref, mp.x_cg)
     drag_slope = aircraft_polar(
         project, case,
-        alpha=[design.trim.alpha - 0.25, design.trim.alpha + 0.25],
-        trim_deflection=design.trim.trim_deflection, ns=ns, nc=nc,
+        alpha=[trimmed.alpha - 0.25, trimmed.alpha + 0.25],
+        trim_deflection=trimmed.trim_deflection, ns=ns, nc=nc,
     )
     cd_alpha = float((drag_slope.CD[1] - drag_slope.CD[0]) / np.radians(0.5))
     corrected = replace(
-        derivatives,
+        base,
         CD=design.CD_total,
         CD_alpha=cd_alpha,
-        Cm=derivatives.Cm + body["Cm_alpha"] * np.radians(trimmed.alpha),
-        Cm_alpha=derivatives.Cm_alpha + body["Cm_alpha"],
-        CY_beta=derivatives.CY_beta + body["CY_beta"],
-        Cl_beta=derivatives.Cl_beta + body["Cl_beta"],
-        Cn_beta=derivatives.Cn_beta + body["Cn_beta"],
-        CY_p=derivatives.CY_p + body["CY_p"],
-        CY_r=derivatives.CY_r + body["CY_r"],
-        Cl_p=derivatives.Cl_p + body["Cl_p"],
-        Cn_p=derivatives.Cn_p + body["Cn_p"],
-        Cl_r=derivatives.Cl_r + body["Cl_r"],
-        Cn_r=derivatives.Cn_r + body["Cn_r"],
+        Cm=base.Cm + body["Cm_alpha"] * np.radians(trimmed.alpha),
+        Cm_alpha=base.Cm_alpha + body["Cm_alpha"],
+        CY_beta=base.CY_beta + body["CY_beta"],
+        Cl_beta=base.Cl_beta + body["Cl_beta"],
+        Cn_beta=base.Cn_beta + body["Cn_beta"],
+        CY_p=base.CY_p + body["CY_p"],
+        CY_r=base.CY_r + body["CY_r"],
+        Cl_p=base.Cl_p + body["Cl_p"],
+        Cn_p=base.Cn_p + body["Cn_p"],
+        Cl_r=base.Cl_r + body["Cl_r"],
+        Cn_r=base.Cn_r + body["Cn_r"],
     )
     power = propulsion_derivatives(project, case) if project.propulsion is not None else None
     longitudinal = stability.longitudinal_modes(
-        aircraft, case.speed, case.altitude, mass=mp.mass, Iyy=mp.Iyy,
+        None, case.speed, case.altitude, mass=mp.mass, Iyy=mp.Iyy,
         x_cg=mp.x_cg, derivs=corrected,
         thrust_dT_dV=power.dT_dV if power else 0.0,
         thrust_dM_dV=power.dM_dV if power else 0.0,
+        S_ref=S_ref, c_ref=c_ref,
     )
     lateral = stability.lateral_modes(
-        aircraft, case.speed, case.altitude, mass=mp.mass,
+        None, case.speed, case.altitude, mass=mp.mass,
         Ixx=mp.Ixx, Izz=mp.Izz, Ixz=mp.Ixz, x_cg=mp.x_cg,
-        derivs=corrected,
+        derivs=corrected, S_ref=S_ref, b_ref=b_ref,
     )
     warnings = [
-        "Dynamic derivatives use equivalent trapezoidal lifting surfaces; station breaks are not yet retained.",
+        "Lifting-surface derivatives come from a mirrored vortex-lattice solve of every surface at the "
+        "design-point trim; the alpha-dot terms are a lagged-downwash tail-volume estimate.",
         "Body increments use slender-body and strip-crossflow correlations, not a coupled body-panel solution.",
         "Propulsion speed derivatives assume fixed throttle; nonlinear controls and propeller gyroscopic effects are omitted.",
     ]
-    if any(surface.trim_control == "elevator" for surface in project.trim_surfaces):
-        warnings.append(
-            "The dynamic-mode adapter does not yet retain elevator hinge geometry; elevator trim is "
-            "used by the integrated design point but the derivative model uses an equivalent full tail."
-        )
     return DynamicStability(
         longitudinal=longitudinal, lateral=lateral, derivatives=corrected,
         body_increments=body, propulsion_increments=power,
