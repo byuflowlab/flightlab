@@ -1484,6 +1484,9 @@ def analyze_dynamic_stability(
         "roll inertia. It slows the short period and roll subsidence of a light model.",
         "Body increments use slender-body and strip-crossflow correlations, not a coupled body-panel solution.",
         "Propulsion speed derivatives assume fixed throttle; nonlinear controls and propeller gyroscopic effects are omitted.",
+        "The wake trails straight aft along the body axis, as in AVL. A wake aligned with the flow "
+        "changes the tail's downwash enough to move pitch stiffness by 5 to 8 per cent; treat "
+        "the short period and neutral point as good to about that.",
     ]
     return DynamicStability(
         longitudinal=longitudinal, lateral=lateral, derivatives=corrected,

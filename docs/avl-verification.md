@@ -78,13 +78,20 @@ than the centre of gravity, so the verification aircraft puts the two at the
 same point.
 
 **Wake proximity.** With the blank project's tail in its original place, 3 to
-4 cm above the wing's wake sheet, the two codes disagree on pitch stiffness by
-25 % even though they agree within 2 % once the tail is raised. FlightLab
-rotates a twisted section's geometry, AVL only its boundary condition, so the
-sheets leave the wing about a centimetre apart, and the downwash at a tail
-that close to the sheet is sensitive to that. Neither code is trustworthy for
-a tail inside the wake; a real wake rolls up and follows the flow.
+4 cm above the wing's wake sheet, AVL at the usual 28 spanwise panels gives a
+pitch stiffness 25 % weaker than FlightLab. That is AVL's discretisation, not
+a modelling difference: refining AVL to 140 panels brings it to within 1.5 %
+of FlightLab, whose answer is already converged at 28. Near a sheet of
+discrete trailing vortices the velocity field is spiky between the legs, and
+AVL has no vortex core to smooth it; FlightLab's five-per-cent core gives the
+continuous-sheet answer at coarse paneling. The verification aircraft keeps
+its tail high only so that a 28-panel AVL is a fair reference.
 
+What remains for any tail is the flat wake itself. Both codes trail the wake
+straight aft along the body x axis. Aligning it with the freestream instead
+changes pitch stiffness by 5 to 8 % at every tail height tested, and a real
+wake also rolls up and descends; that is the level of modelling uncertainty
+in the tail's downwash, and it does not grow as the tail approaches the sheet.
 **Surface junctions.** A fin whose root lies exactly on the tailplane's root
 line makes every lateral derivative depend on the paneling in both codes.
 FlightLab uses a finite vortex core of five per cent of local chord between

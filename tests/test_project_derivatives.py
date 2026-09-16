@@ -140,3 +140,23 @@ def test_zero_inertia_gives_a_plain_message_instead_of_a_crash():
     project.propulsion = None
     with pytest.raises(ValueError, match="no moment of inertia.*point mass"):
         analyze_dynamic_stability(project, ns=10, nc=3)
+
+
+def test_pitch_stiffness_with_a_tail_near_the_wake_is_converged_at_workbench_paneling():
+    """AVL without a vortex core needs 140 spanwise panels to settle the pitch
+    stiffness of the blank project's low tail; the finite core between
+    surfaces settles it here by 28, so a low tail needs no special treatment."""
+    from flightlab.project import blank_project
+
+    project = blank_project()
+    project.bodies, project.masses = [], []
+    project.structure.surface = ""
+    project.surfaces = project.surfaces[:2]
+    S_ref, b_ref, c_ref = blank_project().reference_quantities()
+    project.reference.mode = "manual"
+    project.reference.area, project.reference.span, project.reference.chord = S_ref, b_ref, c_ref
+    coarse = derivatives(project, alpha=2.0, x_ref=0.12, ns=12, nc=4).Cm_alpha
+    normal = derivatives(project, alpha=2.0, x_ref=0.12, ns=28, nc=4).Cm_alpha
+    fine = derivatives(project, alpha=2.0, x_ref=0.12, ns=56, nc=4).Cm_alpha
+    assert abs(normal - fine) < 0.005 * abs(fine)
+    assert abs(coarse - fine) < 0.025 * abs(fine)
