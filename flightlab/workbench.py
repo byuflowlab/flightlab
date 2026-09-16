@@ -22,6 +22,7 @@ import panel as pn
 
 from . import catalog, drag, foil, loads, stability
 from .project import (
+    BODY_DRAG_MODELS,
     AirfoilDefinition,
     AircraftProject,
     BodyDefinition,
@@ -57,9 +58,7 @@ ORIENTATION_OPTIONS = ["horizontal", "vertical"]
 PURPOSE_OPTIONS = ["wing", "tail", "canard", "fin", "other"]
 TRIM_CONTROL_OPTIONS = ["fixed", "whole_surface", "elevator"]
 REFERENCE_MODES = ["surface", "selected_surfaces", "manual"]
-DRAG_MODELS = [
-    "streamlined_body", "bluff_round_member", "faired_member", "streamlined_strut",
-]
+DRAG_MODELS = list(BODY_DRAG_MODELS)
 
 STATION_TOOLTIPS = {
     "x_le": "Leading-edge x coordinate; positive x is aft [m].",
@@ -400,7 +399,7 @@ class Workbench:
         self.body_table = _table(
             pd.DataFrame(), height=250,
             editors={
-                **{name: {"type": "number"} for name in ("length", "width", "height", "diameter", "x_nose", "y", "z", "count", "cone_fraction")},
+                **{name: {"type": "number"} for name in ("length", "width", "height", "diameter", "x_nose", "y", "z", "count", "drag_area", "cone_fraction")},
                 "drag_model": {"type": "list", "values": DRAG_MODELS},
             }, configuration={"layout": "fitDataTable"},
         )
@@ -464,7 +463,10 @@ class Workbench:
                 "Airfoil shape", "Lift curve", "Drag polar", "Pitching moment",
                 "Lift-to-drag", "Transition",
             ],
-            value=["Airfoil shape", "Lift curve", "Drag polar", "Pitching moment", "Lift-to-drag"],
+            value=[
+                "Airfoil shape", "Lift curve", "Drag polar", "Pitching moment",
+                "Lift-to-drag", "Transition",
+            ],
             inline=True,
         )
         self.run_airfoil_button = pn.widgets.Button(
@@ -1424,7 +1426,7 @@ class Workbench:
                 ("diameter", float, True), ("x_nose", float, True),
                 ("y", float, False), ("z", float, False),
                 ("count", int, False), ("drag_model", str, False),
-                ("cone_fraction", float, False),
+                ("drag_area", float, True), ("cone_fraction", float, False),
             ]
             self.project.bodies = [BodyDefinition(**row) for row in _coerce_records(event.new, schema, "Body")]
             self._refresh_all("Body geometry updated.")
@@ -2282,9 +2284,7 @@ class Workbench:
             models = {body.name: body.drag_model for body in self.project.bodies}
             descriptions = {
                 "streamlined_body": "skin friction × form factor on wetted area",
-                "bluff_round_member": "round/bluff member: CD=0.90 on frontal area",
-                "faired_member": "faired member: CD=0.25 on frontal area",
-                "streamlined_strut": "streamlined strut: CD=0.10 on frontal area",
+                "drag_area": "entered drag area CD·S per item × count",
             }
             self.body_results.value = pd.DataFrame([
                 {
@@ -3118,11 +3118,12 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             pn.Row(self.run_loads_button, self.loads_download),
         )
         body_help = pn.pane.Markdown(
-            "Bodies contribute **parasite-drag geometry**, not mass. Use **streamlined** for a fuselage "
-            "or nacelle (skin friction × form factor on wetted area); **bluff_round_member** for a round/bluff "
-            "member (C<sub>D</sub> = 0.90 on frontal area); **faired_member** for a faired member "
-            "(C<sub>D</sub> = 0.25); and **streamlined_strut** for a streamlined strut "
-            "(C<sub>D</sub> = 0.10). Enter `diameter` for a round "
+            "Bodies contribute **parasite-drag geometry**, not mass. Use **streamlined_body** for a "
+            "fuselage, nacelle, or boom: skin friction × form factor on the wetted area its dimensions imply. "
+            "Use **drag_area** for everything else (gear legs, wheels, struts, pods, antennas) and enter "
+            "`drag_area` = C<sub>D</sub> × frontal area in m² per item; `count` multiplies it. Typical "
+            "C<sub>D</sub> on frontal area: round tube or unfaired gear leg ≈ 0.9, faired leg ≈ 0.25, "
+            "streamline-section strut ≈ 0.10, exposed wheel ≈ 0.3–0.5. Enter `diameter` for a round "
             "section, or `width` and `height` for an elliptical/rectangular effective section. `x_nose` "
             "is the nose's body-axis x position. `cone_fraction` is the combined fraction of body length "
             "used for tapered nose/tail regions when estimating wetted area and volume. The result table "

@@ -162,7 +162,13 @@ class Body:
         gear leg or other bluff item lying across the flow, whose drag is a
         coefficient on its *frontal* area and is an order of magnitude larger
         for the same size.  Getting this wrong on a strutted fixed-gear
-        aircraft halves its drag.
+        aircraft halves its drag.  ``"drag_area"`` -- a fixed drag area
+        ``drag_area`` (m^2, per item) entered directly, for anything whose
+        drag is best taken from a published coefficient or a measurement:
+        ``CD_frontal * frontal area`` for a gear leg or wheel, a strut, an
+        antenna, a camera pod.  Multiplied by ``count``.
+    drag_area : float, optional
+        Drag area per item, m^2, used only by ``drag_model="drag_area"``.
     notes : str
     """
 
@@ -178,6 +184,7 @@ class Body:
     drag_model: str = "streamlined"
     cone_fraction: float = 0.4
     notes: str = ""
+    drag_area: Optional[float] = None
 
     @property
     def frontal_area(self) -> float:

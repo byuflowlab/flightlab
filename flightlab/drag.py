@@ -669,6 +669,10 @@ def buildup(
     ``drag_model="crossflow"`` (or ``"faired"``) to be treated that way
     instead, using :data:`CROSSFLOW_CD`.  The Cessna 172S uses it; without it
     a clean buildup puts its L/D near 17 against a published best glide of 9.
+    ``drag_model="drag_area"`` skips every correlation and charges the body's
+    own ``drag_area`` (m^2 per item, times ``count``) directly; the row then
+    reports the implied coefficient on frontal area when a cross-section is
+    known.
     """
     air = atmos.at(altitude, dT)
     M = float(air.mach(V))
@@ -713,6 +717,23 @@ def buildup(
         if include is not None and kind not in include:
             continue
         model = getattr(body, "drag_model", "streamlined")
+        if model == "drag_area":
+            drag_area = getattr(body, "drag_area", None)
+            if drag_area is None or not np.isfinite(drag_area) or drag_area < 0:
+                skipped.append(body.name)
+                continue
+            f_body = float(drag_area) * body.count
+            try:
+                frontal = body.frontal_area
+            except ValueError:
+                frontal = float("nan")
+            cd_x = f_body / frontal if frontal > 0 else float("nan")
+            rows.append(
+                Row(body.name, "drag_area", frontal, body.length,
+                    float(air.reynolds(V, body.length)), float("nan"), float("nan"),
+                    f_body, cd_x)
+            )
+            continue
         if model in (
             "crossflow", "faired", "streamline_strut",
             "bluff_round_member", "faired_member", "streamlined_strut",

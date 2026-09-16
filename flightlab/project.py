@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from . import catalog, foil
+from . import catalog, drag, foil
 from .fleet import Aircraft, Body, Component, Planform
 
 __all__ = [
@@ -162,9 +162,26 @@ class ReferenceGeometry:
     chord: Optional[float] = None
 
 
+BODY_DRAG_MODELS = ("streamlined_body", "drag_area")
+
+# Drag models of saved files from before format 3 gained ``drag_area``.  Each
+# was a fixed coefficient on frontal area, so a saved body converts exactly to
+# an entered drag area; the shape keys index :data:`flightlab.drag.CROSSFLOW_CD`.
+LEGACY_BODY_DRAG_SHAPES = {
+    "bluff_round_member": "cylinder",
+    "faired_member": "faired",
+    "streamlined_strut": "streamline",
+}
+
+
 @dataclass
 class BodyDefinition:
-    """A fuselage, nacelle, boom, pod, strut, or landing-gear item."""
+    """A fuselage, nacelle, boom, pod, strut, or landing-gear item.
+
+    ``drag_model`` is ``"streamlined_body"`` (skin friction times a form factor
+    on the wetted area the dimensions imply) or ``"drag_area"`` (the entered
+    ``drag_area`` in m^2 per item, times ``count``, charged directly).
+    """
 
     name: str
     length: float
@@ -176,11 +193,27 @@ class BodyDefinition:
     z: float = 0.0
     count: int = 1
     drag_model: str = "streamlined_body"
+    drag_area: Optional[float] = None
     cone_fraction: float = 0.4
 
     def to_body(self) -> Body:
         model = "streamlined" if self.drag_model == "streamlined_body" else self.drag_model
         return Body(**{**asdict(self), "drag_model": model})
+
+    @classmethod
+    def from_saved(cls, item: dict) -> "BodyDefinition":
+        """Build a body from a saved row, converting pre-``drag_area`` models."""
+        item = dict(item)
+        shape = LEGACY_BODY_DRAG_SHAPES.get(item.get("drag_model"))
+        if shape is not None:
+            item["drag_model"] = "drag_area"
+            if item.get("drag_area") is None:
+                probe = cls(**{**item, "drag_model": "drag_area"}).to_body()
+                try:
+                    item["drag_area"] = drag.CROSSFLOW_CD[shape] * probe.frontal_area / probe.count
+                except ValueError:
+                    item["drag_area"] = None
+        return cls(**item)
 
 
 @dataclass
@@ -745,12 +778,13 @@ class AircraftProject:
         for body in self.bodies:
             if body.length <= 0 or body.count < 1:
                 issues.append(ProjectIssue("error", f"{body.name}: length and count must be positive"))
-            if body.diameter is None and body.width is None:
-                issues.append(ProjectIssue("warning", f"{body.name}: no cross-section; drag row will be skipped"))
-            if body.drag_model not in {
-                "streamlined_body", "bluff_round_member", "faired_member", "streamlined_strut",
-            }:
+            if body.drag_model not in BODY_DRAG_MODELS:
                 issues.append(ProjectIssue("error", f"{body.name}: unknown drag model {body.drag_model!r}"))
+            elif body.drag_model == "drag_area":
+                if body.drag_area is None or body.drag_area < 0:
+                    issues.append(ProjectIssue("error", f"{body.name}: enter a drag area (CD × frontal area) of zero or more"))
+            elif body.diameter is None and body.width is None:
+                issues.append(ProjectIssue("warning", f"{body.name}: no cross-section; drag row will be skipped"))
         for item in self.masses:
             allowed_mass_models = {"", "point", "span", "surface_area", "surface_volume", "body_volume"}
             if item.distributed not in allowed_mass_models:
@@ -969,7 +1003,7 @@ class AircraftProject:
                 for item in data.get("surfaces", [])
             ],
             reference=ReferenceGeometry(**data.get("reference", {})),
-            bodies=[BodyDefinition(**item) for item in data.get("bodies", [])],
+            bodies=[BodyDefinition.from_saved(item) for item in data.get("bodies", [])],
             masses=[MassItem(**item) for item in data.get("masses", [])],
             cases=[FlightCase(**item) for item in data.get("cases", [])],
             airfoils={key: AirfoilDefinition(**value) for key, value in data.get("airfoils", {}).items()},
