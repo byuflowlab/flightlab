@@ -38,8 +38,8 @@ and the weekly update procedure.
 
 FlightLab is a normal Python package. Use whichever environment manager you already have.
 Run the commands from the cloned repository directory
-that contains `pyproject.toml`. Python 3.10 or newer is supported; neither the package nor
-the Pixi environment sets an upper Python-version bound.
+that contains `pyproject.toml`. Python 3.10 or newer is supported and there is no upper
+Python-version bound.
 
 ```bash
 git clone https://github.com/byuflowlab/flightlab.git
@@ -51,17 +51,21 @@ run identical software for the semester; see the
 [library-versions note](student_setup/README.md#library-versions-are-frozen-for-the-semester).
 Installing `flightlab` alone keeps the loose ranges in `dependencies`.
 
-### Pixi
+### uv (recommended)
 
-Pixi installs the package, browser workbench, and test tools from `pyproject.toml`:
+[uv](https://docs.astral.sh/uv/) is the same tool the student launchers use, so a
+development environment made with it has exactly the libraries students run. Install uv
+once (`brew install uv`, `pipx install uv`, or the installer on its site), then:
 
 ```bash
-pixi install
-pixi run test
-pixi run workbench
+uv sync --extra dev --extra workbench
+uv run pytest tests
+uv run flightlab workbench
 ```
 
-`pixi run workbench` opens the general aircraft-design application.
+`uv sync` downloads a Python if needed, creates `.venv`, and installs the package in
+editable mode with the versions recorded in `uv.lock`. `uv run flightlab workbench` opens
+the general aircraft-design application.
 
 ### pip with a virtual environment
 
@@ -96,11 +100,11 @@ python -m flightlab workbench
 ```
 
 The editable install (`-e`) makes local package corrections available without reinstalling.
-Check the installation with the Python launcher for your environment—for example, `pixi run
+Check the installation with the Python launcher for your environment—for example, `uv run
 python`, `.venv/bin/python`, or the `python` in an activated conda environment:
 
 ```bash
-pixi run python -c "import flightlab; print(flightlab.__version__)"
+uv run python -c "import flightlab; print(flightlab.__version__)"
 ```
 
 It should print `0.9.0`.
@@ -110,7 +114,7 @@ It should print `0.9.0`.
 The workbench is the general interface for homework and the open-ended aircraft project:
 
 ```bash
-pixi run workbench
+uv run flightlab workbench
 ```
 
 or, from an activated pip or conda environment:

@@ -102,25 +102,8 @@ flightlab = ["data/airfoils/*.dat", "data/props/*.txt"]
 testpaths = ["tests"]
 filterwarnings = ["error::RuntimeWarning"]
 
-[tool.pixi.workspace]
-channels = ["conda-forge"]
-platforms = ["osx-arm64", "osx-64", "linux-64", "win-64"]
-
-[tool.pixi.pypi-dependencies]
-flightlab = { path = ".", editable = true }
-
-[tool.pixi.environments]
-default = { solve-group = "default" }
-dev = { features = ["dev"], solve-group = "default" }
-workbench = { features = ["workbench"], solve-group = "default" }
-
-[tool.pixi.tasks]
-workbench = "python -m flightlab workbench"
-test = "pytest tests"
-
-# Only the interpreter comes from conda-forge.  Everything else is installed
-# from PyPI through the extras above, so the pixi workbench environment uses
-# exactly the pinned versions students receive (conda builds of panel or pandas
-# would otherwise conflict with those pins).
-[tool.pixi.dependencies]
-python = ">=3.10"
+# The library itself runs on Python 3.10+, but the exact workbench pins were
+# resolved for the Python the student launchers install.  Tell uv to lock the
+# development environment for that range only, and use the same interpreter.
+[tool.uv]
+environments = ["python_version >= '3.12'"]

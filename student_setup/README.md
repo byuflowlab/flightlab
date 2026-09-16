@@ -69,8 +69,9 @@ a year, before the course starts, refresh them with `uv` on the PATH:
 
 ```bash
 python student_setup/update_pins.py
-pixi run test            # or pytest in any environment with the new pins
-python -m flightlab workbench
+uv sync --extra dev --extra workbench   # refresh uv.lock and .venv from the new pins
+uv run pytest tests
+uv run flightlab workbench
 ```
 
 Then commit and promote as usual. Do not edit the block between `BEGIN PINS`
