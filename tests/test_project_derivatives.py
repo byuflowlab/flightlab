@@ -96,3 +96,47 @@ def test_an_isolated_fin_matches_the_same_panel_laid_flat():
     assert -fin.CY_beta == pytest.approx(flat.CL_alpha, rel=1e-3)
     helmbold = 2 * np.pi * 1.5 / (2 + np.sqrt(1.5**2 + 4))
     assert -fin.CY_beta == pytest.approx(helmbold, rel=0.06)
+
+
+def test_symmetric_lift_slope_converges_for_a_cambered_root_with_dihedral():
+    """The blank wing's cambered root section, rotated by the root dihedral,
+    used to sit a fraction of a millimetre off the symmetry plane and the lift
+    slope wandered by ten per cent with the panel count."""
+    import numpy as np
+    from flightlab.project import blank_project
+    from flightlab.project_analysis import analyze
+
+    project = blank_project()
+    project.surfaces = project.surfaces[:1]
+    project.masses = []
+    project.structure.surface = ""
+    slopes = []
+    for ns in (8, 16, 40):
+        low = analyze(project, alpha=0.0, ns=ns, nc=4, x_ref=0.1).CL
+        high = analyze(project, alpha=5.0, ns=ns, nc=4, x_ref=0.1).CL
+        slopes.append((high - low) / np.radians(5.0))
+    assert max(slopes) - min(slopes) < 0.01 * max(slopes)
+    assert 4.0 < slopes[-1] < 4.5
+
+
+def test_cruciform_tail_lateral_derivatives_converge_with_panel_count():
+    """The fin and tailplane of the built-in projects share a root line; the
+    finite core between surfaces keeps that junction from dominating."""
+    from flightlab.project import blank_project
+
+    project = blank_project()
+    values = [derivatives(project, alpha=0.6, trim_deflection=-0.5, ns=ns, nc=4) for ns in (12, 28, 56)]
+    for name in ("CY_beta", "Cn_beta", "Cn_r"):
+        series = [getattr(v, name) for v in values]
+        assert max(series) - min(series) < 0.03 * abs(series[-1]), (name, series)
+    assert all(v.Cn_beta > 0 for v in values)
+
+
+def test_zero_inertia_gives_a_plain_message_instead_of_a_crash():
+    from flightlab.project import MassItem
+
+    project = example_project()
+    project.masses = [MassItem("everything", 0.75, x=0.05)]
+    project.propulsion = None
+    with pytest.raises(ValueError, match="no moment of inertia.*point mass"):
+        analyze_dynamic_stability(project, ns=10, nc=3)

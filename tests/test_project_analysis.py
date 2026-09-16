@@ -247,14 +247,24 @@ def test_vlm_takes_dihedral_from_the_stations():
     fixed_vee.surfaces[1].trim_control = "fixed"
     assert analyze(fixed_vee, alpha=3.0).surfaces == ("Main wing", "Horizontal tail")
 
-    # Whole-surface deflection acts normal to the V-tail, so its pitch control
-    # power is roughly cos^2(45 deg) of the same tail laid flat.
+    # Whole-surface deflection rotates each half about its own spanwise axis,
+    # so the normal force it produces is the full deflection response and only
+    # its vertical component, cos(45 deg), pitches the aircraft.  The two
+    # inclined halves also shed less downwash on each other than a flat pair,
+    # which lifts the ratio above 0.71.  The mirrored lateral solve must give
+    # the same answer as the symmetric one.
     flat = deepcopy(project)
     flat.surfaces.pop(2)
+    x_ref = 0.15
     def control_power(candidate):
-        return analyze(candidate, alpha=3.0, trim_deflection=5.0).Cm - analyze(candidate, alpha=3.0).Cm
+        return (analyze(candidate, alpha=3.0, trim_deflection=5.0, x_ref=x_ref, ns=20, nc=4).Cm
+                - analyze(candidate, alpha=3.0, x_ref=x_ref, ns=20, nc=4).Cm)
     ratio = control_power(vee) / control_power(flat)
-    assert 0.40 < ratio < 0.56
+    assert 0.80 < ratio < 0.95
+    from flightlab.project_analysis import derivatives
+    mirrored = (derivatives(vee, alpha=3.0, trim_deflection=5.0, x_ref=x_ref, ns=20, nc=4).Cm
+                - derivatives(vee, alpha=3.0, x_ref=x_ref, ns=20, nc=4).Cm)
+    assert mirrored == pytest.approx(control_power(vee), rel=1e-6)
 
 
 def test_centerline_fin_is_skipped_but_mirrored_fins_enter_the_solve():

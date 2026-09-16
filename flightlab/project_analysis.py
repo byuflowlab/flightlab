@@ -220,6 +220,22 @@ class DynamicStability:
 CENTERLINE_TOLERANCE = 1e-9
 
 
+def surface_core(chord: float, dspan: float) -> float:
+    """Finite vortex-core radius used between *different* lifting surfaces, m.
+
+    Student geometries routinely put one surface's edge on another's: a
+    cruciform tail shares the fin and tailplane root line, and the wing's
+    flat wake passes through the tail.  Where a vortex leg of one surface
+    runs along or through another surface's control points the singular
+    kernel makes every lateral derivative wander with the panel count.  A core
+    of five per cent of the local chord (never under a millimetre) converges
+    those cases to three figures while changing well-separated surfaces by a
+    few parts per thousand; ten per cent begins to soften the wing-on-tail
+    downwash.  Panels of the same surface never use the core.
+    """
+    return max(1e-3, 0.05 * chord)
+
+
 def _station_dihedral(surface: LiftingSurface) -> np.ndarray:
     """Local dihedral angle of every station, from the surface's own y/z path.
 
@@ -282,7 +298,7 @@ def _grid_for_surface(
     phi = _station_dihedral(surface)
     y = np.array([station.y for station in stations])
     z = np.array([station.z for station in stations])
-    return wing_to_grid(
+    grid, ratios = wing_to_grid(
         xle=[station.x_le for station in stations],
         yle=y * np.cos(phi) + z * np.sin(phi),
         zle=-y * np.sin(phi) + z * np.cos(phi),
@@ -296,6 +312,15 @@ def _grid_for_surface(
         spacing_s=Cosine(),
         spacing_c=Uniform(),
     )
+    # A root station on the centerline puts the root section in the plane of
+    # symmetry.  Rotating a cambered or twisted section by the local dihedral
+    # moves its chordwise points a fraction of a millimetre off that plane,
+    # and the solver's on-plane test is exact: the root vortex leg then sees
+    # its own mirror image a hair away and the lift wanders with the panel
+    # count.  Put the root column back on the plane.
+    if abs(stations[0].y) <= CENTERLINE_TOLERANCE:
+        grid[1, :, 0] = 0.0
+    return grid, ratios
 
 
 def _bodies(project: AircraftProject):
@@ -363,6 +388,7 @@ def _solve_system(
         symmetric=True,
         ratios=ratios,
         derivatives=derivatives,
+        fcore=surface_core,
     )
     return system, surfaces, names, x_ref
 
@@ -1233,6 +1259,7 @@ def derivatives(
     fs = Freestream.from_degrees(case.speed, alpha=alpha)
     system = steady_analysis(
         grids, reference, fs, symmetric=False, ratios=ratios, derivatives=True,
+        fcore=surface_core,
     )
     CF, CM = body_forces(system, frame=Stability())
     dCF, dCM = stability_derivatives(system)
@@ -1275,6 +1302,16 @@ def analyze_dynamic_stability(
     project.require_valid()
     mp = stability.mass_properties(project.components())
     S_ref, b_ref, c_ref = project.reference_quantities()
+    inertia_scale = mp.mass * max(b_ref, c_ref) ** 2
+    if min(mp.Ixx, mp.Iyy, mp.Izz) <= 1e-9 * inertia_scale:
+        raise ValueError(
+            "the mass table gives no moment of inertia "
+            f"(Ixx = {mp.Ixx:.3g}, Iyy = {mp.Iyy:.3g}, Izz = {mp.Izz:.3g} kg m^2), so the "
+            "dynamic modes cannot be formed. A single point mass at the centre of gravity "
+            "has no inertia: distribute the masses over the geometry (span, surface_area, "
+            "surface_volume, or body_volume) or place several point masses where the "
+            "components really sit."
+        )
     design = run_design_point(project, case, ns=ns, nc=nc)
     trimmed = design.trim
     base = derivatives(
