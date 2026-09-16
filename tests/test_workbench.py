@@ -406,3 +406,18 @@ def test_added_stations_continue_along_the_surface():
         (before.z - previous.z) / (before.y - previous.y)
     )
     plt.close("all")
+
+
+def test_an_opened_project_keeps_the_file_name_it_was_opened_from():
+    from types import SimpleNamespace
+
+    from flightlab.project import blank_project
+
+    workbench = Workbench()
+    workbench.project_upload.filename = "rc1-hw1.flightlab.json"
+    workbench._open_project(SimpleNamespace(new=blank_project().to_json().encode()))
+    assert workbench.project_filename.value == "rc1-hw1.flightlab.json"
+    assert workbench.project_download.filename == "rc1-hw1.flightlab.json"
+    # A starter or example is named after the aircraft again.
+    workbench._load_project(blank_project())
+    assert workbench.project_filename.value == "untitled_aircraft.flightlab.json"

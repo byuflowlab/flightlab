@@ -1211,6 +1211,8 @@ class Workbench:
     def _open_project(self, event):
         if not event.new:
             return
+        # Keep the name of the file the student chose; clear() forgets it.
+        opened_as = (self.project_upload.filename or "").strip()
         # Reset the browser's file chooser now, so the same file can be chosen
         # again even when this one turns out to be unreadable.
         self.project_upload.clear()
@@ -1218,6 +1220,11 @@ class Workbench:
             self._load_project(AircraftProject.from_json(event.new.decode("utf-8")))
         except Exception as exc:
             self._error(f"Could not open project: {exc}")
+            return
+        # A file opened from disk keeps its own name for the next download;
+        # only a project built from scratch is named after the aircraft.
+        if opened_as:
+            self.project_filename.value = opened_as
 
     # -- surfaces ---------------------------------------------------------
 
