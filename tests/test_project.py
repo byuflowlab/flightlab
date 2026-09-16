@@ -70,8 +70,8 @@ def test_uploaded_selig_dat_text_does_not_need_a_temporary_file():
 def test_equivalent_aircraft_is_only_the_handbook_adapter():
     project = example_project()
     aircraft = project.equivalent_aircraft()
-    assert aircraft.wing.area == pytest.approx(project.primary_horizontal_surface.area)
-    assert aircraft.wing.span == pytest.approx(project.primary_horizontal_surface.span)
+    assert aircraft.wing.area == pytest.approx(project.primary_surface.area)
+    assert aircraft.wing.span == pytest.approx(project.primary_surface.span)
     assert aircraft.components == project.components()
     assert "Equivalent single trapezoid" in aircraft.wing.notes
 
@@ -171,6 +171,6 @@ def test_incompatible_project_files_are_refused_with_a_plain_message():
     with pytest.raises(ValueError, match=r"uses FlightLab format 99.*reads format"):
         AircraftProject.from_dict({**data, "format_version": 99})
 
-    del data["surfaces"][0]["orientation"]
-    with pytest.raises(ValueError, match="missing or misnames a required field.*orientation"):
+    del data["surfaces"][0]["purpose"]
+    with pytest.raises(ValueError, match="missing or misnames a required field.*purpose"):
         AircraftProject.from_dict(data)

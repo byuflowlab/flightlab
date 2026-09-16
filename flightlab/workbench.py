@@ -54,7 +54,6 @@ from .project_analysis import (
 
 pn.extension("tabulator", notifications=True, sizing_mode="stretch_width")
 
-ORIENTATION_OPTIONS = ["horizontal", "vertical"]
 PURPOSE_OPTIONS = ["wing", "tail", "canard", "fin", "other"]
 TRIM_CONTROL_OPTIONS = ["fixed", "whole_surface", "elevator"]
 REFERENCE_MODES = ["surface", "selected_surfaces", "manual"]
@@ -365,8 +364,7 @@ class Workbench:
 
         self.surface_select = pn.widgets.Select(label="Lifting surface")
         self.surface_name = pn.widgets.TextInput(label="Surface name")
-        self.surface_orientation = pn.widgets.Select(label="Orientation", options=ORIENTATION_OPTIONS)
-        self.surface_purpose = pn.widgets.Select(label="Purpose (descriptive)", options=PURPOSE_OPTIONS)
+        self.surface_purpose = pn.widgets.Select(label="Purpose", options=PURPOSE_OPTIONS)
         self.surface_trim_control = pn.widgets.Select(
             label="Pitch-trim control", options=TRIM_CONTROL_OPTIONS
         )
@@ -653,8 +651,7 @@ class Workbench:
             "reference_area": "Manual coefficient reference area Sref [m²].",
             "reference_span": "Manual coefficient reference span bref [m].",
             "reference_chord": "Manual coefficient reference chord cref [m].",
-            "surface_orientation": "Descriptive label. The VLM meshes every mirrored surface from its stations regardless; the label chooses the handbook lateral-directional fin, tail-volume summaries, and which surfaces may be the coefficient reference, spar surface, or pitch-trim control.",
-            "surface_purpose": "Descriptive role; it does not change the solver.",
+            "surface_purpose": "Sets defaults only: 'wing' is the default coefficient reference and spar surface, 'fin' is the surface the handbook drag adapter treats as the vertical tail. The solver reads geometry, not this label.",
             "surface_trim_control": "Geometry the trim solver may deflect to balance pitching moment.",
             "surface_symmetric": "Reflect this stored half-surface across the aircraft centerline.",
             "surface_control_hinge": "Chord fraction measured aft from the leading edge.",
@@ -714,7 +711,6 @@ class Workbench:
 
         self.surface_select.param.watch(self._surface_selected, "value")
         self.surface_name.param.watch(self._surface_metadata_changed, "value")
-        self.surface_orientation.param.watch(self._surface_metadata_changed, "value")
         self.surface_purpose.param.watch(self._surface_metadata_changed, "value")
         self.surface_trim_control.param.watch(self._surface_metadata_changed, "value")
         self.surface_control_hinge.param.watch(self._surface_metadata_changed, "value")
@@ -846,15 +842,15 @@ class Workbench:
         self.analysis_case.value = case_names[0] if case_names else None
         self.loads_case.options = case_names
         self.loads_case.value = case_names[0] if case_names else None
-        horizontal_names = [surface.name for surface in project.horizontal_surfaces]
-        self.loads_surface.options = horizontal_names
+        surface_names = [surface.name for surface in project.surfaces]
+        self.loads_surface.options = surface_names
         try:
-            default_structural_surface = project.primary_horizontal_surface.name
+            default_structural_surface = project.primary_surface.name
         except ValueError:
-            default_structural_surface = horizontal_names[0] if horizontal_names else None
+            default_structural_surface = surface_names[0] if surface_names else None
         structural_surface = (
             project.structure.surface
-            if project.structure.surface in horizontal_names
+            if project.structure.surface in surface_names
             else default_structural_surface
         )
         project.structure.surface = structural_surface or ""
@@ -1241,7 +1237,6 @@ class Workbench:
             return
         self._updating = True
         self.surface_name.value = surface.name
-        self.surface_orientation.value = surface.orientation
         self.surface_purpose.value = surface.purpose
         self.surface_trim_control.value = surface.trim_control
         self.surface_control_hinge.value = surface.control_hinge_fraction
@@ -1264,7 +1259,6 @@ class Workbench:
             return
         old_name = surface.name
         surface.name = self.surface_name.value.strip() or old_name
-        surface.orientation = self.surface_orientation.value
         surface.purpose = self.surface_purpose.value
         surface.trim_control = self.surface_trim_control.value
         surface.control_hinge_fraction = float(self.surface_control_hinge.value)
@@ -1347,7 +1341,7 @@ class Workbench:
             dy, dz = last.y - previous.y, last.z - previous.z
         length = math.hypot(dy, dz)
         if length <= 0.0:
-            dy, dz, length = (0.0, 1.0, 1.0) if surface.orientation == "vertical" else (1.0, 0.0, 1.0)
+            dy, dz, length = (0.0, 1.0, 1.0) if surface.is_vertical else (1.0, 0.0, 1.0)
         step = 0.20 / length
         new = SurfaceStation(
             last.x_le + 0.03, last.y + step * dy, last.z + step * dz,
@@ -1380,7 +1374,7 @@ class Workbench:
     def _add_surface(self, _):
         index = len(self.project.surfaces) + 1
         surface = LiftingSurface(
-            f"Surface {index}", "horizontal", "other", "fixed", True,
+            f"Surface {index}", "other", "fixed", True,
             [SurfaceStation(0.5, 0, 0, 0.2), SurfaceStation(0.55, 0.3, 0, 0.12)],
         )
         self.project.surfaces.append(surface)
@@ -1822,12 +1816,12 @@ class Workbench:
         editors = dict(self.mass_table.editors)
         editors["attached_to"] = {"type": "list", "values": [""] + names}
         self.mass_table.editors = editors
-        horizontal = [surface.name for surface in self.project.horizontal_surfaces]
+        names = [surface.name for surface in self.project.surfaces]
         current = self.loads_surface.value
-        self.loads_surface.options = horizontal
-        if current not in horizontal:
+        self.loads_surface.options = names
+        if current not in names:
             try:
-                current = self.project.primary_horizontal_surface.name
+                current = self.project.primary_surface.name
             except ValueError:
                 current = horizontal[0] if horizontal else None
             self.loads_surface.value = current
@@ -2102,20 +2096,9 @@ class Workbench:
         self._replace_figure(self.geometry_plot, fig)
         self._refresh_surface_geometry()
         try:
-            primary = self.project.primary_horizontal_surface
             S_ref, b_ref, c_ref = self.project.reference_quantities()
             mp = stability.mass_properties(self.project.components())
-            htail = next((surface for surface in self.project.trim_surfaces if surface is not primary), None)
-            vtail = max(self.project.vertical_surfaces, key=lambda surface: surface.area, default=None)
             wing_loading = mp.mass * 9.80665 / S_ref
-            vh = (
-                htail.area * (htail.aerodynamic_center_x - mp.x_cg) / (S_ref * c_ref)
-                if htail else float("nan")
-            )
-            vv = (
-                vtail.area * (vtail.aerodynamic_center_x - mp.x_cg) / (S_ref * b_ref)
-                if vtail else float("nan")
-            )
             self.geometry_summary.object = self._metric_cards([
                 ("Vehicle mass", f"{mp.mass:.4g} kg"),
                 ("CG (x, y, z)", f"{mp.x_cg:.3g}, {mp.y_cg:.3g}, {mp.z_cg:.3g} m"),
@@ -2124,13 +2107,11 @@ class Workbench:
                 ("Reference span bref", f"{b_ref:.4f} m"),
                 ("Reference aspect ratio", f"{b_ref**2 / S_ref:.2f}"),
                 ("Reference chord cref", f"{c_ref:.4f} m"),
-                ("Horizontal-tail volume", f"{vh:.3f}" if np.isfinite(vh) else "—"),
-                ("Vertical-tail volume", f"{vv:.3f}" if np.isfinite(vv) else "—"),
                 ("Bodies / mass items", f"{len(self.project.bodies)} / {len(self.project.masses)}"),
             ])
             self.surface_summary_table.value = pd.DataFrame([
                 {
-                    "surface": surface.name, "orientation": surface.orientation,
+                    "surface": surface.name,
                     "purpose": surface.purpose, "trim control": surface.trim_control,
                     "area [m²]": surface.area, "span/height [m]": surface.span,
                     "MAC [m]": surface.mac, "AC x [m]": surface.aerodynamic_center_x,
@@ -2159,7 +2140,7 @@ class Workbench:
             ns = max(8, int(self.analysis_ns.value))
         nc = int(self.analysis_nc.value)
         grid = _display_grid_for_surface(surface, ns, nc)
-        color = "#a64b35" if surface.orientation == "vertical" else "#2563a6"
+        color = "#a64b35" if surface.is_vertical else "#2563a6"
         for sign in ([1, -1] if surface.symmetric else [1]):
             mesh = grid.copy()
             mesh[1] *= sign
@@ -2551,8 +2532,8 @@ class Workbench:
             self.project.require_valid()
             case = self.project.case(self.loads_case.value)
             surface = self.project.surface_named(self.loads_surface.value)
-            if surface is None or surface.orientation != "horizontal":
-                raise ValueError("choose a horizontal structural lifting surface")
+            if surface is None:
+                raise ValueError("choose an existing structural lifting surface")
 
             mass_properties = stability.mass_properties(self.project.components())
             mass = mass_properties.mass
@@ -3028,10 +3009,12 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             "These fields have separate jobs. The vortex lattice meshes **every mirrored surface** from "
             "its stations, so wings, tails, V-tails, and twin fins all enter the symmetric longitudinal "
             "solve at their true dihedral; a single centerline fin is skipped because it carries no load "
-            "in symmetric flight. **Orientation** is a descriptive label: it picks the fin used by the "
-            "handbook lateral-directional model and the tail-volume summary, and only horizontal "
-            "surfaces may serve as the coefficient reference, spar surface, or pitch-trim control. "
-            "**Purpose** is a descriptive label only. "
+            "in symmetric flight. There is no orientation setting: dihedral, and whether a surface is a "
+            "fin, come from the stations. **Purpose** only sets defaults: a *wing* surface is the default "
+            "coefficient reference and spar surface, and *fin* names the surface the handbook drag "
+            "adapter treats as the vertical tail. Any surface may be the coefficient reference, the spar "
+            "surface, or the pitch-trim control; a near-vertical trim surface simply has little pitch "
+            "authority, and the trim solve will say so. "
             "**Pitch-trim control = whole_surface** rotates the complete surface; **elevator** "
             "deflects only the camber line aft of the entered hinge. Positive elevator deflection is "
             "trailing-edge down. The solver varies aircraft angle of attack and one shared control "
@@ -3042,7 +3025,7 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             alert_type="light",
         )
         surface_controls = pn.Row(
-            self.surface_select, self.surface_name, self.surface_orientation,
+            self.surface_select, self.surface_name,
             self.surface_purpose, self.surface_trim_control,
             self.surface_symmetric, sizing_mode="stretch_width",
         )

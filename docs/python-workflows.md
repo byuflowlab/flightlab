@@ -34,7 +34,7 @@ The project is the editable input model. Its principal collections are:
 
 | Input | Location | Important fields |
 |---|---|---|
-| lifting surfaces | `project.surfaces` | `stations`, `orientation`, `purpose`, `symmetric`, trim-control fields |
+| lifting surfaces | `project.surfaces` | `stations`, `purpose`, `symmetric`, trim-control fields |
 | surface stations | `surface.stations` | `x_le`, `y`, `z`, `chord`, `twist_deg`, `airfoil` |
 | bodies | `project.bodies` | `length`, `width`, `height`, `diameter`, `x_nose`, `drag_model` |
 | user mass rows | `project.masses` | `mass`, `x`, `y`, `z`, distribution and attachment fields |

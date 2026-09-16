@@ -212,7 +212,7 @@ def test_trim_reports_required_deflection_outside_control_limits():
         trim(project, ns=14, nc=6)
 
 
-def test_vlm_takes_dihedral_from_the_stations_and_ignores_the_orientation_label():
+def test_vlm_takes_dihedral_from_the_stations():
     from copy import deepcopy
 
     import numpy as np
@@ -234,7 +234,7 @@ def test_vlm_takes_dihedral_from_the_stations_and_ignores_the_orientation_label(
     fin_grid, _ = _grid_for_surface(project, fin, 8, 3)
     assert fin_grid[:, -1, 0] == pytest.approx([fin.stations[0].x_le + fin.stations[0].chord, 0.0, fin.stations[0].z])
 
-    # A 45-degree V-tail gives the same longitudinal answer under either label.
+    # A 45-degree V-tail is meshed like any other mirrored surface.
     vee = deepcopy(project)
     vee.surfaces.pop(2)
     c = s = np.sqrt(0.5)
@@ -243,15 +243,9 @@ def test_vlm_takes_dihedral_from_the_stations_and_ignores_the_orientation_label(
         SurfaceStation(0.75, 0.25 * c, 0.04 + 0.25 * s, 0.11, 0.0, "naca0012"),
     ]
     assert np.degrees(_station_dihedral(vee.surfaces[1])) == pytest.approx([45.0, 45.0])
-    results = {}
-    for label in ("horizontal", "vertical"):
-        candidate = deepcopy(vee)
-        candidate.surfaces[1].orientation = label
-        candidate.surfaces[1].trim_control = "fixed"
-        results[label] = analyze(candidate, alpha=3.0)
-    assert results["vertical"].surfaces == results["horizontal"].surfaces == ("Main wing", "Horizontal tail")
-    assert results["vertical"].CL == pytest.approx(results["horizontal"].CL)
-    assert results["vertical"].Cm == pytest.approx(results["horizontal"].Cm)
+    fixed_vee = deepcopy(vee)
+    fixed_vee.surfaces[1].trim_control = "fixed"
+    assert analyze(fixed_vee, alpha=3.0).surfaces == ("Main wing", "Horizontal tail")
 
     # Whole-surface deflection acts normal to the V-tail, so its pitch control
     # power is roughly cos^2(45 deg) of the same tail laid flat.

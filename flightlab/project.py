@@ -84,7 +84,6 @@ class LiftingSurface:
     """
 
     name: str
-    orientation: str  # "horizontal" or "vertical": a descriptive label for handbook models and eligibility rules
     purpose: str
     trim_control: str
     symmetric: bool
@@ -92,6 +91,19 @@ class LiftingSurface:
     control_hinge_fraction: float = 0.75
     control_min_deg: float = -25.0
     control_max_deg: float = 25.0
+
+    @property
+    def is_vertical(self) -> bool:
+        """True when the stations run more in z than in y: a fin rather than a wing.
+
+        Derived from the geometry, never entered.  It only colours plots and
+        tells the handbook drag adapter that the surface is a single panel;
+        the vortex lattice takes dihedral from the stations directly.
+        """
+        if len(self.stations) < 2:
+            return self.purpose == "fin"
+        first, last = self.stations[0], self.stations[-1]
+        return abs(last.z - first.z) > abs(last.y - first.y)
 
     def path_lengths(self) -> np.ndarray:
         if len(self.stations) < 2:
@@ -437,19 +449,8 @@ class AircraftProject:
         )
 
     @property
-    def horizontal_surfaces(self) -> Tuple[LiftingSurface, ...]:
-        return tuple(surface for surface in self.surfaces if surface.orientation == "horizontal")
-
-    @property
-    def vertical_surfaces(self) -> Tuple[LiftingSurface, ...]:
-        return tuple(surface for surface in self.surfaces if surface.orientation == "vertical")
-
-    @property
     def trim_surfaces(self) -> Tuple[LiftingSurface, ...]:
-        return tuple(
-            surface for surface in self.horizontal_surfaces
-            if surface.trim_control != "fixed"
-        )
+        return tuple(surface for surface in self.surfaces if surface.trim_control != "fixed")
 
     @property
     def reference_surface(self) -> LiftingSurface:
@@ -481,16 +482,19 @@ class AircraftProject:
         raise ValueError(f"unknown reference mode {self.reference.mode!r}")
 
     @property
-    def primary_horizontal_surface(self) -> LiftingSurface:
-        """Geometry used by legacy single-wing handbook adapters."""
+    def primary_surface(self) -> LiftingSurface:
+        """The wing: the coefficient reference surface when one is chosen, else
+        the largest surface whose purpose is ``"wing"``, else the largest surface.
+
+        Used for the default moment reference point, the default spar surface,
+        and the wing slot of the handbook drag adapter.
+        """
         if self.reference.mode == "surface":
-            candidate = self.reference_surface
-            if candidate.orientation == "horizontal":
-                return candidate
-        candidates = [surface for surface in self.horizontal_surfaces if surface.purpose == "wing"]
-        candidates = candidates or list(self.horizontal_surfaces)
+            return self.reference_surface
+        candidates = [surface for surface in self.surfaces if surface.purpose == "wing"]
+        candidates = candidates or list(self.surfaces)
         if not candidates:
-            raise ValueError("the project has no horizontal lifting surface")
+            raise ValueError("the project has no lifting surface")
         return max(candidates, key=lambda surface: surface.area)
 
     def motor(self, propulsor: PropulsorSetup) -> catalog.Motor:
@@ -686,24 +690,12 @@ class AircraftProject:
             issues.append(ProjectIssue("error", f"unknown reference mode {self.reference.mode!r}"))
         elif self.reference.mode == "surface" and self.surface_named(self.reference.surface) is None:
             issues.append(ProjectIssue("error", f"choose an existing coefficient reference surface"))
-        elif (
-            self.reference.mode == "surface"
-            and self.reference_surface.orientation != "horizontal"
-        ):
-            issues.append(ProjectIssue("error", "the coefficient reference surface must be horizontal"))
         elif self.reference.mode == "selected_surfaces":
             if not self.reference.surfaces:
                 issues.append(ProjectIssue("error", "select at least one coefficient reference surface"))
             missing = [name for name in self.reference.surfaces if self.surface_named(name) is None]
             if missing:
                 issues.append(ProjectIssue("error", f"unknown coefficient reference surfaces: {', '.join(missing)}"))
-            vertical = [
-                name for name in self.reference.surfaces
-                if self.surface_named(name) is not None
-                and self.surface_named(name).orientation != "horizontal"
-            ]
-            if vertical:
-                issues.append(ProjectIssue("error", f"coefficient reference surfaces must be horizontal: {', '.join(vertical)}"))
         elif self.reference.mode == "manual":
             values = (self.reference.area, self.reference.span, self.reference.chord)
             if any(value is None or value <= 0 for value in values):
@@ -717,7 +709,7 @@ class AircraftProject:
             issues.append(ProjectIssue("warning", "no mass components: trim and CG are unavailable"))
         if not self.trim_surfaces:
             issues.append(ProjectIssue(
-                "warning", "no horizontal pitch-trim control: integrated trim is unavailable"
+                "warning", "no pitch-trim control: integrated trim is unavailable"
             ))
         elif len(self.trim_surfaces) > 1:
             issues.append(ProjectIssue(
@@ -729,14 +721,10 @@ class AircraftProject:
             if surface.name in names:
                 issues.append(ProjectIssue("error", f"duplicate surface name {surface.name!r}"))
             names.add(surface.name)
-            if surface.orientation not in {"horizontal", "vertical"}:
-                issues.append(ProjectIssue("error", f"{surface.name}: unknown orientation {surface.orientation!r}"))
             if surface.purpose not in {"wing", "tail", "canard", "fin", "other"}:
                 issues.append(ProjectIssue("error", f"{surface.name}: unknown purpose {surface.purpose!r}"))
             if surface.trim_control not in {"fixed", "whole_surface", "elevator"}:
                 issues.append(ProjectIssue("error", f"{surface.name}: unknown trim control {surface.trim_control!r}"))
-            if surface.orientation == "vertical" and surface.trim_control != "fixed":
-                issues.append(ProjectIssue("error", f"{surface.name}: a vertical surface cannot be a pitch-trim surface"))
             if not 0.05 <= surface.control_hinge_fraction <= 0.95:
                 issues.append(ProjectIssue("error", f"{surface.name}: control hinge x/c must be between 0.05 and 0.95"))
             if surface.control_min_deg >= surface.control_max_deg:
@@ -760,10 +748,9 @@ class AircraftProject:
                     issues.append(ProjectIssue("error", f"{surface.name}: airfoil {station.airfoil!r}: {exc}"))
 
         if self.structure.surface:
-            structural_surface = self.surface_named(self.structure.surface)
-            if structural_surface is None or structural_surface.orientation != "horizontal":
+            if self.surface_named(self.structure.surface) is None:
                 issues.append(ProjectIssue(
-                    "error", "the saved structural surface must be an existing horizontal surface"
+                    "error", "the saved structural surface must be an existing lifting surface"
                 ))
         for label, value in (
             ("spar-cap centroid spacing", self.structure.spar_height),
@@ -904,7 +891,7 @@ class AircraftProject:
         first, last = surface.stations[0], surface.stations[-1]
         semispan = max(float(np.sum(surface.path_lengths())), 1e-12)
         sweep_le = math.degrees(math.atan2(last.x_le - first.x_le, semispan))
-        dihedral = 90.0 if surface.orientation == "vertical" else math.degrees(
+        dihedral = math.degrees(
             math.atan2(last.z - first.z, max(abs(last.y - first.y), 1e-12))
         )
         return Planform(
@@ -923,7 +910,7 @@ class AircraftProject:
             thickness=self._mean_thickness(surface),
             x_le=first.x_le,
             z=first.z,
-            vertical=surface.orientation == "vertical",
+            vertical=surface.is_vertical,
             notes=(
                 "Equivalent single trapezoid preserving area, span, and MAC for "
                 "handbook drag calculations; VLM uses the complete station geometry."
@@ -932,9 +919,22 @@ class AircraftProject:
 
     def equivalent_aircraft(self) -> Aircraft:
         """Return an Aircraft adapter for handbook drag and legacy helpers."""
-        wing = self.primary_horizontal_surface
+        # The handbook adapter has one slot each for a wing, a horizontal tail,
+        # and a fin.  The wing is the primary surface, the tail is the pitch-trim
+        # surface (else the largest tail/canard), and the fin is the largest
+        # surface whose purpose is "fin".
+        wing = self.primary_surface
+        others = [surface for surface in self.surfaces if surface is not wing]
         htail = next((surface for surface in self.trim_surfaces if surface is not wing), None)
-        vtail = max(self.vertical_surfaces, key=lambda surface: surface.area, default=None)
+        if htail is None:
+            htail = max(
+                (surface for surface in others if surface.purpose in {"tail", "canard"}),
+                key=lambda surface: surface.area, default=None,
+            )
+        vtail = max(
+            (surface for surface in others if surface is not htail and surface.purpose == "fin"),
+            key=lambda surface: surface.area, default=None,
+        )
         components = self.components()
         total = sum(component.mass for component in components)
         return Aircraft(
@@ -991,8 +991,10 @@ class AircraftProject:
         return cls(
             name=data["name"],
             surfaces=[
+                # Files saved before September 2026 carry an "orientation"
+                # label; everything it controlled now comes from the stations.
                 LiftingSurface(
-                    name=item["name"], orientation=item["orientation"],
+                    name=item["name"],
                     purpose=item["purpose"], trim_control=item["trim_control"],
                     symmetric=item["symmetric"],
                     stations=[SurfaceStation(**station) for station in item.get("stations", [])],
@@ -1046,16 +1048,16 @@ def blank_project() -> AircraftProject:
         name="Untitled aircraft",
         notes="Starter geometry for a new student design; replace every assumed value.",
         surfaces=[
-            LiftingSurface("Main wing", "horizontal", "wing", "fixed", True, [
+            LiftingSurface("Main wing", "wing", "fixed", True, [
                 SurfaceStation(0.00, 0.00, 0.00, 0.36, 2.0, "naca2412"),
                 SurfaceStation(0.05, 0.45, 0.02, 0.30, 1.0, "naca2412"),
                 SurfaceStation(0.14, 0.80, 0.05, 0.18, -1.0, "naca2412"),
             ]),
-            LiftingSurface("Horizontal tail", "horizontal", "tail", "whole_surface", True, [
+            LiftingSurface("Horizontal tail", "tail", "whole_surface", True, [
                 SurfaceStation(0.72, 0.00, 0.04, 0.18, 0.0, "naca0012"),
                 SurfaceStation(0.75, 0.25, 0.04, 0.11, 0.0, "naca0012"),
             ]),
-            LiftingSurface("Vertical tail", "vertical", "fin", "fixed", False, [
+            LiftingSurface("Vertical tail", "fin", "fixed", False, [
                 SurfaceStation(0.68, 0.00, 0.04, 0.22, 0.0, "naca0012"),
                 SurfaceStation(0.78, 0.00, 0.28, 0.10, 0.0, "naca0012"),
             ]),

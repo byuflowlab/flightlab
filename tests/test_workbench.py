@@ -35,7 +35,8 @@ def test_workbench_builds_and_runs_integrated_analysis():
         assert len(axis.lines) >= 2
     assert "surface_area" in workbench.mass_table.editors["distributed"]["values"]
     assert "Main wing" in workbench.mass_table.editors["attached_to"]["values"]
-    assert workbench.surface_orientation.value == "horizontal"
+    assert not hasattr(workbench, "surface_orientation")
+    assert workbench.surface_purpose.value == "wing"
     assert workbench.surface_trim_control.options == ["fixed", "whole_surface", "elevator"]
     assert workbench.reference_mode.value == "surface"
     assert "correlation / reference" in workbench.body_results.value.columns

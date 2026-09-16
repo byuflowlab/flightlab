@@ -224,8 +224,8 @@ def _station_dihedral(surface: LiftingSurface) -> np.ndarray:
 
     Each section is rotated about the surface's local spanwise axis, as AVL
     does, so twist, camber, and control deflection act normal to the surface
-    whether it is a flat wing, a fin, or a V-tail.  The descriptive
-    ``orientation`` label plays no part.  Angles are folded into
+    whether it is a flat wing, a fin, or a V-tail.  There is no orientation
+    setting; the stations decide.  Angles are folded into
     ``[-pi/2, pi/2]`` so a surface whose stations run toward negative ``y``
     keeps the same "up" direction as its mirror image.
     """
@@ -300,8 +300,8 @@ def _grid_for_surface(
 def _longitudinal_surfaces(project: AircraftProject) -> List[LiftingSurface]:
     """Surfaces panelled by the symmetric (alpha-only) vortex-lattice solve.
 
-    Every mirrored surface enters, whatever its ``orientation`` label: wings,
-    tails, canards, V-tails, and twin fins are all meshed from their stations.
+    Every mirrored surface enters: wings, tails, canards, V-tails, and twin
+    fins are all meshed from their stations.
     A surface lying in the plane of symmetry (a single centerline fin) carries
     no load in symmetric flight, so it is left out of the lattice and its
     profile drag is added from the zero-lift section polar instead.
@@ -331,7 +331,7 @@ def _solve_system(
 ):
     project.require_valid()
     surfaces = _longitudinal_surfaces(project)
-    primary = project.primary_horizontal_surface
+    primary = project.primary_surface
     S_ref, b_ref, c_ref = project.reference_quantities()
     x_ref = primary.aerodynamic_center_x if x_ref is None else float(x_ref)
     grids, ratios, names = [], [], []
@@ -460,7 +460,7 @@ def neutral_point(
     """Lifting-surface neutral point and static slopes for a project."""
     case = project.case() if case is None else case
     alpha = case.alpha_deg if alpha is None else float(alpha)
-    primary = project.primary_horizontal_surface
+    primary = project.primary_surface
     S_ref, b_ref, c_ref = project.reference_quantities()
     x_ref = primary.aerodynamic_center_x if x_ref is None else float(x_ref)
     system, _, _, _ = _solve_system(
@@ -879,7 +879,7 @@ def analyze_structure(
     """
     case = project.case() if case is None else case
     setup = project.structure
-    surface = surface or setup.surface or project.primary_horizontal_surface.name
+    surface = surface or setup.surface or project.primary_surface.name
     load_factor = case.load_factor if load_factor is None else float(load_factor)
     speed = case.speed if speed is None else float(speed)
     spar_height = setup.spar_height if spar_height is None else float(spar_height)
@@ -895,8 +895,8 @@ def analyze_structure(
     cap_width = setup.cap_width if cap_width is None else float(cap_width)
     project.require_valid()
     lifting_surface = project.surface_named(surface)
-    if lifting_surface is None or lifting_surface.orientation != "horizontal":
-        raise ValueError("choose a horizontal structural lifting surface")
+    if lifting_surface is None:
+        raise ValueError("choose an existing structural lifting surface")
     if load_factor <= 0:
         raise ValueError("structural design load factor must be positive")
     if speed <= 0:
