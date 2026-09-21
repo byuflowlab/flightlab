@@ -460,3 +460,43 @@ def test_rate_derivatives_match_a_finite_difference():
 
     assert dCM["p"][0] == pytest.approx(dCM_fd[0], rel=2e-3)
     assert dCM["p"][0] < 0  # roll damping
+
+
+def test_lifting_line_strips_match_near_field_strips_on_a_flat_wing():
+    """With no kink and no leg skew the two strip definitions differ only by
+    the streamwise induced velocity, which a planar unswept wing does not
+    have at its bound vortices."""
+    from flightlab.vlm import Body
+
+    system, grid = _rect(ns=24, nc=2)
+    r, c = lifting_line_geometry(system.grids)
+    # the body z-force agrees to round-off; stability-frame lift also carries
+    # sin(alpha) times the near-field induced drag, which the line has not
+    near, _ = lifting_line_coefficients(system, r, c, frame=Body())
+    line, _ = lifting_line_coefficients(system, r, c, frame=Body(), near_field=False)
+    assert line[0][2] == pytest.approx(near[0][2], rel=1e-10)
+    line_s, _ = lifting_line_coefficients(system, r, c, frame=Stability(), near_field=False)
+    assert np.all(np.abs(line_s[0][0]) < 1e-12)
+
+
+def test_lifting_line_strips_are_smooth_across_a_dihedral_kink():
+    """The near-field root strip of a mirrored wing with dihedral and twist
+    feels its own image across the kink and grows with the panel count; the
+    lifting-line strip does not."""
+    y = np.array([0.0, 4.0])
+    for ns in (30, 90):
+        grid, ratios = wing_to_grid(
+            [0.0, 0.2], y, np.tan(np.radians(4.0)) * y, [1.0, 0.8],
+            np.radians([2.0, 0.0]), np.radians([4.0, 4.0]), ns, 3,
+            spacing_s=Cosine(), spacing_c=Uniform(),
+        )
+        # the root column is held on the symmetry plane, as the project does
+        grid[1, :, 0] = 0.0
+        ref_ = Reference(7.2, 0.9, 8.0, [0.0, 0.0, 0.0], 1.0)
+        fs = Freestream.from_degrees(1.0, alpha=4.0)
+        system = steady_analysis([grid], ref_, fs, symmetric=True, ratios=[ratios])
+        r, c = lifting_line_geometry(system.grids)
+        near, _ = lifting_line_coefficients(system, r, c, frame=Stability())
+        line, _ = lifting_line_coefficients(system, r, c, frame=Stability(), near_field=False)
+        assert abs(line[0][2, 0] - line[0][2, 1]) < 0.01 * line[0][2, 1], (ns, line[0][2, :3])
+        assert near[0][2, 0] > 1.05 * near[0][2, 1], (ns, near[0][2, :3])

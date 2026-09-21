@@ -340,7 +340,9 @@ def body_forces_derivatives(system: System):
 # --- per-station coefficients ----------------------------------------------
 
 
-def lifting_line_coefficients(system: System, r=None, c=None, frame=None, xc=0.25):
+def lifting_line_coefficients(
+    system: System, r=None, c=None, frame=None, xc=0.25, near_field: bool = True
+):
     """Force and moment coefficients per unit span at each spanwise station.
 
     This is what a strip-integration drag buildup and a span-loading plot both
@@ -361,6 +363,16 @@ def lifting_line_coefficients(system: System, r=None, c=None, frame=None, xc=0.2
     xc : float
         Chordwise location of the lifting line if ``r`` and ``c`` are computed
         here.  Defaults to the quarter chord.
+    near_field : bool
+        ``True`` (the default, and VortexLattice.jl's definition) sums the
+        near-field forces of every filament in the strip: the bound vortices
+        with the full induced velocity, and the two chordwise legs.  These
+        strips add up to :func:`body_forces` exactly, and they carry a strip
+        induced drag.  ``False`` returns the lifting-line coefficients instead:
+        ``rho * Gamma * (V x dl)`` with the freestream (and rotation) alone and
+        ``dl`` the strip's own segment of the lifting line, so
+        ``rho * V * Gamma`` per unit span, the section lift a Trefftz-plane
+        analysis sees.  It carries no induced drag.
 
     Returns
     -------
@@ -370,6 +382,22 @@ def lifting_line_coefficients(system: System, r=None, c=None, frame=None, xc=0.2
         the section lift coefficient ``c_l``.
     cm : list of ndarray
         One ``(3, ns)`` array per surface, normalized by local chord squared.
+
+    Notes
+    -----
+    The near-field strips are not smooth beside a kink in the lifting line or
+    at a free edge, and refining the panels makes them worse.  Where a wing
+    with dihedral or sweep meets its mirror image the neighbouring segment of
+    the line induces a streamwise velocity at the bound vortex centre that
+    grows as the panel beside the kink narrows; and the chordwise legs of a
+    twisted, dihedral section are slightly skewed in ``y`` and so carry a
+    lift that is a fixed amount per chord, booked ring by ring, which the
+    strip beside the symmetry plane and the tip strip are left holding.  On
+    the starter wing of the workbench the root strip's near-field ``cl`` read
+    0.53 against 0.42 next door at 28 panels and 0.83 at 60.  Both effects
+    are real parts of the near-field total (AVL shows the same root strip),
+    but neither belongs to a section lift coefficient; the lifting-line
+    strips are what a span-load plot or a section-stall check should use.
     """
     if system.properties is None:
         raise RuntimeError(
@@ -387,6 +415,9 @@ def lifting_line_coefficients(system: System, r=None, c=None, frame=None, xc=0.2
         r, c = lifting_line_geometry(system.grids, xc)
 
     ref, fs = system.reference, system.freestream
+    offs = system.offsets
+    qS = 0.5 * RHO * ref.V**2 * ref.S
+    Vfs, _ = freestream_velocity_derivatives(fs)
     cf_out, cm_out = [], []
 
     for isurf, surf in enumerate(system.surfaces):
@@ -401,13 +432,29 @@ def lifting_line_coefficients(system: System, r=None, c=None, frame=None, xc=0.2
         rs = 0.5 * (rl + rr)  # (ns, 3) station reference point
         cs = 0.5 * (ci[:-1] + ci[1:])  # (ns,)
 
+        if near_field:
+            forces = (
+                (surf.rtc, p.cfb),
+                (surf.left_center, p.cfl),
+                (surf.right_center, p.cfr),
+            )
+        else:
+            g = system.gamma[offs[isurf] : offs[isurf + 1]].reshape(1, nc, ns)
+            g_net = _net_circulation(g).reshape(1, nc * ns)
+            Ptop = surf.flat("rtc")
+            Vrot, _ = rotational_velocity_derivatives(Ptop, fs, ref)
+            V = (Vfs + Vrot)[None, :, :]
+            # Every row of the strip spans the same segment of the lifting
+            # line.  The rows' own bound legs are not used: a root column
+            # held on the symmetry plane skews the root panels, and their
+            # legs are then longer in y than the strip by a fixed amount.
+            dl = np.broadcast_to((rr - rl)[None, :, :], (nc, ns, 3)).reshape(-1, 3)
+            Fb = _kutta(g_net, V, dl)[0] / qS
+            forces = ((surf.rtc, Fb.reshape(nc, ns, 3)),)
+
         cfj = np.zeros((ns, 3))
         cmj = np.zeros((ns, 3))
-        for rc, cval in (
-            (surf.rtc, p.cfb),
-            (surf.left_center, p.cfl),
-            (surf.right_center, p.cfr),
-        ):
+        for rc, cval in forces:
             cfj += cval.sum(axis=0)
             cmj += np.cross(rc - rs[None, :, :], cval).sum(axis=0)
 

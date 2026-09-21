@@ -289,3 +289,22 @@ def test_centerline_fin_is_skipped_but_mirrored_fins_enter_the_solve():
     # Twin fins sit in the wing's sidewash, so they change the answer only slightly.
     assert with_fins.CL == pytest.approx(baseline.CL, rel=0.05)
     assert with_fins.CL != pytest.approx(baseline.CL, abs=1e-6)
+
+
+def test_root_strip_lift_is_smooth_across_the_centerline():
+    """The starter wing has dihedral, so its root bound vortex meets its mirror
+    image at a kink.  The Kutta-Joukowski point of the thin root panel used to
+    feel that image leg: the root strip ``cl`` read 0.53 against 0.43 next
+    door at 28 panels and 0.83 at 60, and the section-stall check fired at
+    the root.  The span loads now report lifting-line strips, the section lift
+    from the bound circulation, so the loading is smooth across the centerline
+    and stays so as the panels are refined."""
+    import numpy as np
+    from flightlab.project import blank_project, example_project
+    from flightlab.project_analysis import analyze
+
+    for project in (blank_project(), example_project()):
+        for ns in (28, 60, 100):
+            view = analyze(project, ns=ns, nc=4).surface("Main wing")
+            inboard = view.cl[:4]
+            assert np.all(np.abs(inboard - inboard[1]) < 0.01 * inboard[1]), (project.name, ns, inboard)

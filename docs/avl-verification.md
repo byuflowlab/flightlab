@@ -95,8 +95,22 @@ in the tail's downwash, and it does not grow as the tail approaches the sheet.
 **Surface junctions.** A fin whose root lies exactly on the tailplane's root
 line makes every lateral derivative depend on the paneling in both codes.
 FlightLab uses a finite vortex core of five per cent of local chord between
-different surfaces, which converges such junctions; AVL has no core, so the
-verification geometry keeps a gap.
+different surfaces, which converges such junctions; AVL's core is two strip
+widths on the trailing legs only, so the verification geometry keeps a gap.
+
+**The root strip.** Both codes take a strip's near-field force from the
+velocity at each bound vortex's centre, and both leave out the bound vortex
+itself but keep the rest of the lifting line. Where the line is kinked
+(dihedral or sweep at the centerline, where a wing meets its mirror image)
+the strip beside the kink picks up a lift and drag spike that grows as the
+panels are refined; on the starter wing AVL's root strip `cl` reads 0.48 at
+28 panels and 0.65 at 60 against 0.44 next door, and this lattice's
+near-field strip did the same. The totals keep those terms, and match. The
+span loads, the section-stall check, and the structural loads instead use the
+lifting-line strips, the Kutta-Joukowski force of the bound circulation in the
+freestream alone, which is the section lift a Trefftz-plane analysis sees and
+is smooth at every panel count. It is what AVL's Trefftz-plane strip output
+reports.
 
 ## What is not compared
 

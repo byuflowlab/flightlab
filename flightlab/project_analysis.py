@@ -493,7 +493,13 @@ def _solution(
     e_inv = CL**2 / (np.pi * AR * CD_i) if CD_i > 0 else float("nan")
 
     r_ll, c_ll = lifting_line_geometry(system.grids)
-    cf, cm = lifting_line_coefficients(system, r_ll, c_ll, frame=Stability())
+    # Lifting-line strips: the section lift from the bound circulation, which
+    # is smooth across the centerline of a wing with dihedral.  The near-field
+    # strips spike beside that kink and never converge; see the ``near_field``
+    # note on lifting_line_coefficients.  The totals above stay near-field.
+    cf, cm = lifting_line_coefficients(
+        system, r_ll, c_ll, frame=Stability(), near_field=False
+    )
     ys, chords, cls, cms, dss, slices = [], [], [], [], [], {}
     start = 0
     for i, name in enumerate(names):

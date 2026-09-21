@@ -433,3 +433,23 @@ def test_dynamics_tab_shows_numbers_not_modelling_caveats():
     assert "natural frequency [rad/s]" in table.columns
     short = table[table["mode"].str.startswith("short period")]
     assert short["damping ratio"].notna().all()
+
+
+def test_panel_count_edits_redraw_the_panel_previews():
+    """The lifting-surface preview is drawn at the analysis resolution, so a
+    new panel count must redraw it without a detour through the aircraft tab."""
+    workbench = Workbench()
+    before = workbench.surface_geometry_plot.object
+    workbench.analysis_ns.value = workbench.analysis_ns.value + 8
+    after = workbench.surface_geometry_plot.object
+    assert after is not before
+    assert f"{after._suptitle.get_text()}".split("—")[1].strip().startswith(
+        str(max(8, round(workbench.analysis_ns.value)))
+    )
+    # With the aircraft-tab mesh shown, that figure follows too.
+    workbench.show_panel_mesh.value = True
+    aircraft_before = workbench.geometry_plot.object
+    surface_before = workbench.surface_geometry_plot.object
+    workbench.analysis_nc.value = workbench.analysis_nc.value + 1
+    assert workbench.geometry_plot.object is not aircraft_before
+    assert workbench.surface_geometry_plot.object is not surface_before

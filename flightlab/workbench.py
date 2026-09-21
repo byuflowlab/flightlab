@@ -38,6 +38,8 @@ from .project import (
     blank_project,
     example_project,
 )
+from .vlm import Cosine
+from .vlm.geometry import spanwise_spacing
 from .project_analysis import (
     TrimNotPossibleError,
     _grid_for_surface,
@@ -275,7 +277,8 @@ def _display_grid_for_surface(surface: LiftingSurface, ns: int, nc: int) -> np.n
     distances = np.concatenate(([0.0], np.cumsum(surface.path_lengths())))
     if distances[-1] <= 0.0:
         raise ValueError("surface stations must span a nonzero distance")
-    eta = 0.5 * (1.0 - np.cos(np.linspace(0.0, np.pi, ns + 1)))
+    # The same cosine spanwise spacing the lattice solve uses.
+    eta, _ = spanwise_spacing(ns + 1, Cosine())
     locations = eta * distances[-1]
 
     def interpolate(attribute):
@@ -973,6 +976,11 @@ class Workbench:
             "Rerun each case you want to compare."
         )
         self._refresh_generated_python()
+        # The panel previews are drawn at the analysis resolution.
+        if self.show_panel_mesh.value:
+            self._refresh_geometry()  # also redraws the lifting-surface preview
+        else:
+            self._refresh_surface_geometry()
 
     def _analysis_case_changed(self, _):
         if self._updating:
