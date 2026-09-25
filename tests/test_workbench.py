@@ -453,3 +453,33 @@ def test_panel_count_edits_redraw_the_panel_previews():
     workbench.analysis_nc.value = workbench.analysis_nc.value + 1
     assert workbench.geometry_plot.object is not aircraft_before
     assert workbench.surface_geometry_plot.object is not surface_before
+
+
+def test_deleting_every_surface_and_adding_one_back_keeps_the_reference_valid():
+    workbench = Workbench()
+    while workbench.project.surfaces:
+        workbench._delete_surface(None)
+    assert workbench.project.surfaces == []
+    assert workbench.project.reference.surface == ""
+    assert workbench.loads_surface.value is None
+    assert workbench.status.alert_type == "light"
+
+    workbench._add_surface(None)
+    surface = workbench.project.surfaces[0]
+    assert workbench.project.reference.surface == surface.name
+    assert workbench.reference_surface.value == surface.name
+    assert workbench.loads_surface.value == surface.name
+    assert not [issue for issue in workbench.project.validate()
+                if "reference surface" in issue.message]
+    plt.close("all")
+
+
+def test_loading_a_stale_reference_name_repairs_the_project_not_just_the_dropdown():
+    workbench = Workbench()
+    project = workbench.project
+    project.reference.surface = "Renamed elsewhere"
+    workbench._load_project(project)
+    assert workbench.project.reference.surface == project.surfaces[0].name
+    assert workbench.reference_surface.value == project.surfaces[0].name
+    workbench.project.reference_quantities()
+    plt.close("all")

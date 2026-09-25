@@ -829,7 +829,11 @@ class Workbench:
         self.reference_surface.options = names
         self.reference_surfaces.options = names
         self.reference_mode.value = project.reference.mode
-        self.reference_surface.value = project.reference.surface if project.reference.surface in names else (names[0] if names else None)
+        if project.reference.surface not in names:
+            # Keep the model and the dropdown in agreement; a stale saved name
+            # would otherwise fail every reference lookup while the UI looked fine.
+            project.reference.surface = names[0] if names else ""
+        self.reference_surface.value = project.reference.surface or None
         self.reference_surfaces.value = [name for name in project.reference.surfaces if name in names]
         self.reference_area.value = project.reference.area or 1.0
         self.reference_span.value = project.reference.span or 1.0
@@ -1393,11 +1397,17 @@ class Workbench:
             [SurfaceStation(0.5, 0, 0, 0.2), SurfaceStation(0.55, 0.3, 0, 0.12)],
         )
         self.project.surfaces.append(surface)
+        names = [item.name for item in self.project.surfaces]
         self._updating = True
-        self.surface_select.options = [item.name for item in self.project.surfaces]
-        self.reference_surface.options = [item.name for item in self.project.surfaces]
-        self.reference_surfaces.options = [item.name for item in self.project.surfaces]
+        self.surface_select.options = names
+        self.reference_surface.options = names
+        self.reference_surfaces.options = names
         self.surface_select.value = surface.name
+        if self.project.surface_named(self.project.reference.surface) is None:
+            # The only surface after every other one was deleted, or a saved
+            # reference name that matches nothing: adopt the new surface.
+            self.project.reference.surface = surface.name
+            self.reference_surface.value = surface.name
         self._updating = False
         self._show_selected_surface()
         self._refresh_all("Added a lifting surface.")
@@ -1838,7 +1848,7 @@ class Workbench:
             try:
                 current = self.project.primary_surface.name
             except ValueError:
-                current = horizontal[0] if horizontal else None
+                current = names[0] if names else None
             self.loads_surface.value = current
 
     def _airfoil_uploaded(self, event):
