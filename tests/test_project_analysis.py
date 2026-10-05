@@ -190,7 +190,7 @@ def test_project_propeller_model_accepts_measured_coefficient_rows():
 
 def test_elevator_geometry_changes_pitching_moment_and_trims_within_limits():
     project = example_project()
-    tail = project.surface("tail")
+    tail = project.surface_named("Horizontal tail")
     tail.trim_control = "elevator"
     tail.control_hinge_fraction = 0.75
 
@@ -203,7 +203,7 @@ def test_elevator_geometry_changes_pitching_moment_and_trims_within_limits():
 
 def test_trim_reports_required_deflection_outside_control_limits():
     project = example_project()
-    tail = project.surface("tail")
+    tail = project.surface_named("Horizontal tail")
     tail.trim_control = "elevator"
     tail.control_min_deg = -0.1
     tail.control_max_deg = 0.1

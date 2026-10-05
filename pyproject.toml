@@ -71,6 +71,7 @@ workbench = [
     "panel-material-ui==0.14.2",  # via panel
     "param==2.4.2",  # via panel, pyviz-comms
     "pillow==12.3.0",  # via bokeh, matplotlib
+    "pygments==2.21.0",  # via -r student_setup/workbench.in
     "pyparsing==3.3.2",  # via matplotlib
     "python-dateutil==2.9.0.post0",  # via matplotlib, pandas
     "pyviz-comms==3.0.6",  # via panel

@@ -102,10 +102,9 @@ def test_density_can_set_solid_surface_mass():
     assert component.Ixx_cg > 0
 
 
-def test_reference_geometry_is_independent_of_surface_purpose():
+def test_reference_geometry_sums_the_selected_surfaces():
     project = example_project()
     second_wing = project.surfaces[1]
-    second_wing.purpose = "wing"
     project.reference = ReferenceGeometry(
         mode="selected_surfaces", surfaces=[project.surfaces[0].name, second_wing.name]
     )
@@ -171,6 +170,18 @@ def test_incompatible_project_files_are_refused_with_a_plain_message():
     with pytest.raises(ValueError, match=r"uses FlightLab format 99.*reads format"):
         AircraftProject.from_dict({**data, "format_version": 99})
 
-    del data["surfaces"][0]["purpose"]
-    with pytest.raises(ValueError, match="missing or misnames a required field.*purpose"):
+    del data["surfaces"][0]["trim_control"]
+    with pytest.raises(ValueError, match="missing or misnames a required field.*trim_control"):
         AircraftProject.from_dict(data)
+
+
+def test_saved_cooling_drag_folds_into_f_other():
+    from flightlab.project import blank_project
+
+    data = blank_project().to_dict()
+    assert "cooling" not in data["cases"][0]
+    data["cases"][0]["f_other"] = 0.002
+    data["cases"][0]["cooling"] = 0.001
+    project = AircraftProject.from_dict(data)
+    assert project.cases[0].f_other == pytest.approx(0.003)
+    assert not hasattr(project.cases[0], "cooling")

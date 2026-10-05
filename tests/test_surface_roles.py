@@ -13,23 +13,26 @@ def test_vertical_is_read_from_the_stations_not_entered():
     wing, tail, fin = project.surfaces
     assert not wing.is_vertical and not tail.is_vertical and fin.is_vertical
     assert not hasattr(fin, "orientation")
-    # A bare surface with one station falls back to its purpose.
-    assert LiftingSurface("stub", "fin", "fixed", False, [SurfaceStation(0, 0, 0, 0.1)]).is_vertical
-    assert not LiftingSurface("stub", "other", "fixed", True, [SurfaceStation(0, 0, 0, 0.1)]).is_vertical
+    # A bare surface with one station has no direction yet.
+    assert not LiftingSurface("stub", "fixed", False, [SurfaceStation(0, 0, 0, 0.1)]).is_vertical
+    assert not hasattr(fin, "purpose")
 
 
-def test_files_saved_with_an_orientation_label_still_load():
+def test_files_saved_with_orientation_and_purpose_labels_still_load():
     data = blank_project().to_dict()
-    for item in data["surfaces"]:
-        item["orientation"] = "vertical" if item["purpose"] == "fin" else "horizontal"
+    assert "purpose" not in data["surfaces"][0]
+    for item, purpose in zip(data["surfaces"], ("wing", "tail", "fin")):
+        item["orientation"] = "vertical" if purpose == "fin" else "horizontal"
+        item["purpose"] = purpose
     restored = AircraftProject.from_dict(data)
     assert [surface.name for surface in restored.surfaces] == [s["name"] for s in data["surfaces"]]
-    assert "orientation" not in restored.to_dict()["surfaces"][0]
+    saved = restored.to_dict()["surfaces"][0]
+    assert "orientation" not in saved and "purpose" not in saved
 
 
 def test_any_surface_may_be_reference_trim_or_spar_surface():
     project = example_project()
-    fin = next(surface for surface in project.surfaces if surface.purpose == "fin")
+    fin = next(surface for surface in project.surfaces if surface.is_vertical)
     project.reference.mode = "surface"
     project.reference.surface = fin.name
     project.structure.surface = fin.name
@@ -40,22 +43,20 @@ def test_any_surface_may_be_reference_trim_or_spar_surface():
     assert project.primary_surface is fin
 
 
-def test_handbook_adapter_dihedral_and_fin_flag_come_from_geometry():
+def test_handbook_adapter_carries_only_the_reference_surface_and_bodies():
     project = blank_project()
     aircraft = project.equivalent_aircraft()
-    assert aircraft.wing.vertical is False
-    assert aircraft.vtail is not None and aircraft.vtail.vertical is True
-    assert aircraft.vtail.dihedral_deg == pytest.approx(90.0)
+    assert aircraft.wing.area == pytest.approx(project.reference_surface.area)
     assert 0.0 < aircraft.wing.dihedral_deg < 10.0
-    # A drag buildup still includes the fin's wetted area with no label anywhere.
+    assert aircraft.htail is None and aircraft.vtail is None
     rows = {row.name for row in drag.buildup(aircraft, V=15.0).rows}
-    assert {"wing", "htail", "vtail"} <= rows
+    assert rows == {"wing", "fuselage"}
 
 
-def test_fin_slot_follows_purpose_when_no_surface_is_labelled_fin():
+def test_primary_surface_is_the_reference_surface_else_the_first_listed():
     project = blank_project()
-    fin = project.surfaces[2]
-    fin.purpose = "other"
-    assert project.equivalent_aircraft().vtail is None
-    fin.purpose = "fin"
-    assert project.equivalent_aircraft().vtail is not None
+    assert project.primary_surface is project.reference_surface
+    project.reference.mode = "manual"
+    assert project.primary_surface is project.surfaces[0]
+    project.surfaces.reverse()
+    assert project.primary_surface is project.surfaces[0]

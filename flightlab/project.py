@@ -84,7 +84,6 @@ class LiftingSurface:
     """
 
     name: str
-    purpose: str
     trim_control: str
     symmetric: bool
     stations: List[SurfaceStation] = field(default_factory=list)
@@ -96,12 +95,13 @@ class LiftingSurface:
     def is_vertical(self) -> bool:
         """True when the stations run more in z than in y: a fin rather than a wing.
 
-        Derived from the geometry, never entered.  It only colours plots and
-        tells the handbook drag adapter that the surface is a single panel;
-        the vortex lattice takes dihedral from the stations directly.
+        Derived from the geometry, never entered.  It decides which surfaces
+        get a same-lift ellipse in the span-load plot and which are left out of
+        the tail-volume estimate; the vortex lattice takes dihedral from the
+        stations directly.
         """
         if len(self.stations) < 2:
-            return self.purpose == "fin"
+            return False
         first, last = self.stations[0], self.stations[-1]
         return abs(last.z - first.z) > abs(last.y - first.y)
 
@@ -156,7 +156,7 @@ class LiftingSurface:
 
 @dataclass
 class ReferenceGeometry:
-    """Aircraft coefficient reference quantities, independent of surface purpose.
+    """Aircraft coefficient reference quantities.
 
     ``mode="surface"`` derives all three quantities from ``surface``.
     ``mode="selected_surfaces"`` sums the named surfaces' planform area, uses
@@ -277,10 +277,22 @@ class FlightCase:
     interference: float = 0.05
     protuberance: float = 0.05
     f_other: float = 0.0
-    cooling: float = 0.0
     n_crit: float = 9.0
     xtr_upper: float = 1.0
     xtr_lower: float = 1.0
+
+    @classmethod
+    def from_saved(cls, item: dict) -> "FlightCase":
+        """Build a case from a saved row.
+
+        Files saved before October 2026 carry a separate ``cooling`` drag
+        coefficient; it was always added to ``f_other``, so fold it in.
+        """
+        item = dict(item)
+        cooling = item.pop("cooling", 0.0)
+        if cooling:
+            item["f_other"] = item.get("f_other", 0.0) + cooling
+        return cls(**item)
 
 
 @dataclass
@@ -424,10 +436,6 @@ class AircraftProject:
     notes: str = ""
     format_version: int = FORMAT_VERSION
 
-    def surface(self, purpose: str) -> Optional[LiftingSurface]:
-        """Return the first surface with a descriptive purpose."""
-        return next((surface for surface in self.surfaces if surface.purpose == purpose), None)
-
     def surface_named(self, name: str) -> Optional[LiftingSurface]:
         return next((surface for surface in self.surfaces if surface.name == name), None)
 
@@ -483,19 +491,18 @@ class AircraftProject:
 
     @property
     def primary_surface(self) -> LiftingSurface:
-        """The wing: the coefficient reference surface when one is chosen, else
-        the largest surface whose purpose is ``"wing"``, else the largest surface.
+        """The coefficient reference surface when one is chosen, else the first
+        listed surface.
 
-        Used for the default moment reference point, the default spar surface,
-        and the wing slot of the handbook drag adapter.
+        Only a fallback: the default moment reference point for scripts that
+        pass no ``x_ref``, the default spar surface before one is chosen, and
+        the wing slot of :meth:`equivalent_aircraft`.
         """
         if self.reference.mode == "surface":
             return self.reference_surface
-        candidates = [surface for surface in self.surfaces if surface.purpose == "wing"]
-        candidates = candidates or list(self.surfaces)
-        if not candidates:
+        if not self.surfaces:
             raise ValueError("the project has no lifting surface")
-        return max(candidates, key=lambda surface: surface.area)
+        return self.surfaces[0]
 
     def motor(self, propulsor: PropulsorSetup) -> catalog.Motor:
         return self.motors[propulsor.motor]
@@ -721,8 +728,6 @@ class AircraftProject:
             if surface.name in names:
                 issues.append(ProjectIssue("error", f"duplicate surface name {surface.name!r}"))
             names.add(surface.name)
-            if surface.purpose not in {"wing", "tail", "canard", "fin", "other"}:
-                issues.append(ProjectIssue("error", f"{surface.name}: unknown purpose {surface.purpose!r}"))
             if surface.trim_control not in {"fixed", "whole_surface", "elevator"}:
                 issues.append(ProjectIssue("error", f"{surface.name}: unknown trim control {surface.trim_control!r}"))
             if not 0.05 <= surface.control_hinge_fraction <= 0.95:
@@ -918,23 +923,16 @@ class AircraftProject:
         )
 
     def equivalent_aircraft(self) -> Aircraft:
-        """Return an Aircraft adapter for handbook drag and legacy helpers."""
-        # The handbook adapter has one slot each for a wing, a horizontal tail,
-        # and a fin.  The wing is the primary surface, the tail is the pitch-trim
-        # surface (else the largest tail/canard), and the fin is the largest
-        # surface whose purpose is "fin".
+        """Return the project as the older three-slot :class:`Aircraft`.
+
+        The handbook modules (``drag``, ``loads``, ``stability``) were written
+        for that object.  Project analyses use it only for the body rows of
+        the drag buildup and for the wing and gross mass in the span-load and
+        V-n helpers, so just the primary surface and the bodies are carried
+        across; lifting-surface drag and derivatives come from the full station
+        geometry instead.
+        """
         wing = self.primary_surface
-        others = [surface for surface in self.surfaces if surface is not wing]
-        htail = next((surface for surface in self.trim_surfaces if surface is not wing), None)
-        if htail is None:
-            htail = max(
-                (surface for surface in others if surface.purpose in {"tail", "canard"}),
-                key=lambda surface: surface.area, default=None,
-            )
-        vtail = max(
-            (surface for surface in others if surface is not htail and surface.purpose == "fin"),
-            key=lambda surface: surface.area, default=None,
-        )
         components = self.components()
         total = sum(component.mass for component in components)
         return Aircraft(
@@ -942,8 +940,6 @@ class AircraftProject:
             label="PROJECT",
             aircraft_class="student design",
             wing=self._equivalent_planform(wing),
-            htail=self._equivalent_planform(htail) if htail else None,
-            vtail=self._equivalent_planform(vtail) if vtail else None,
             bodies=tuple(body.to_body() for body in self.bodies),
             mass={"gross": total} if total else {},
             components=components,
@@ -992,10 +988,10 @@ class AircraftProject:
             name=data["name"],
             surfaces=[
                 # Files saved before September 2026 carry an "orientation"
-                # label; everything it controlled now comes from the stations.
+                # label and files saved before October 2026 a "purpose" label;
+                # everything they controlled now comes from the stations.
                 LiftingSurface(
-                    name=item["name"],
-                    purpose=item["purpose"], trim_control=item["trim_control"],
+                    name=item["name"], trim_control=item["trim_control"],
                     symmetric=item["symmetric"],
                     stations=[SurfaceStation(**station) for station in item.get("stations", [])],
                     control_hinge_fraction=item.get("control_hinge_fraction", 0.75),
@@ -1007,7 +1003,7 @@ class AircraftProject:
             reference=ReferenceGeometry(**data.get("reference", {})),
             bodies=[BodyDefinition.from_saved(item) for item in data.get("bodies", [])],
             masses=[MassItem(**item) for item in data.get("masses", [])],
-            cases=[FlightCase(**item) for item in data.get("cases", [])],
+            cases=[FlightCase.from_saved(item) for item in data.get("cases", [])],
             airfoils={key: AirfoilDefinition(**value) for key, value in data.get("airfoils", {}).items()},
             propulsion=(
                 PropulsionSetup(**{
@@ -1048,16 +1044,16 @@ def blank_project() -> AircraftProject:
         name="Untitled aircraft",
         notes="Starter geometry for a new student design; replace every assumed value.",
         surfaces=[
-            LiftingSurface("Main wing", "wing", "fixed", True, [
+            LiftingSurface("Main wing", "fixed", True, [
                 SurfaceStation(0.00, 0.00, 0.00, 0.36, 2.0, "naca2412"),
                 SurfaceStation(0.05, 0.45, 0.02, 0.30, 1.0, "naca2412"),
                 SurfaceStation(0.14, 0.80, 0.05, 0.18, -1.0, "naca2412"),
             ]),
-            LiftingSurface("Horizontal tail", "tail", "whole_surface", True, [
+            LiftingSurface("Horizontal tail", "whole_surface", True, [
                 SurfaceStation(0.72, 0.00, 0.04, 0.18, 0.0, "naca0012"),
                 SurfaceStation(0.75, 0.25, 0.04, 0.11, 0.0, "naca0012"),
             ]),
-            LiftingSurface("Vertical tail", "fin", "fixed", False, [
+            LiftingSurface("Vertical tail", "fixed", False, [
                 SurfaceStation(0.68, 0.00, 0.04, 0.22, 0.0, "naca0012"),
                 SurfaceStation(0.78, 0.00, 0.28, 0.10, 0.0, "naca0012"),
             ]),

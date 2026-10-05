@@ -36,7 +36,7 @@ def test_workbench_builds_and_runs_integrated_analysis():
     assert "surface_area" in workbench.mass_table.editors["distributed"]["values"]
     assert "Main wing" in workbench.mass_table.editors["attached_to"]["values"]
     assert not hasattr(workbench, "surface_orientation")
-    assert workbench.surface_purpose.value == "wing"
+    assert not hasattr(workbench, "surface_purpose")
     assert workbench.surface_trim_control.options == ["fixed", "whole_surface", "elevator"]
     assert workbench.reference_mode.value == "surface"
     assert "correlation / reference" in workbench.body_results.value.columns
@@ -483,3 +483,25 @@ def test_loading_a_stale_reference_name_repairs_the_project_not_just_the_dropdow
     assert workbench.reference_surface.value == project.surfaces[0].name
     workbench.project.reference_quantities()
     plt.close("all")
+
+
+def test_body_and_case_tables_show_only_live_fields():
+    workbench = Workbench()
+    assert list(workbench.body_table.value.columns) == list(Workbench.BODY_COLUMNS)
+    assert "cooling" not in workbench.case_table.value.columns
+    frame = workbench.body_table.value.copy()
+    frame.loc[0, "cone_fraction"] = 0.6
+    workbench.body_table.value = frame
+    assert workbench.project.bodies[0].cone_fraction == pytest.approx(0.6)
+
+
+def test_python_tab_is_syntax_highlighted():
+    # Panel's Markdown pane colours fenced code only when Pygments is
+    # importable, which is why the workbench extra pins it.
+    import html as html_module
+
+    pytest.importorskip("pygments")
+    workbench = Workbench()
+    for pane in (workbench.python_guide, workbench.python_output):
+        html = html_module.unescape(pane._transform_object(pane.object)["object"])
+        assert 'class="codehilite"' in html and 'class="kn"' in html

@@ -56,7 +56,7 @@ from .project_analysis import (
 
 pn.extension("tabulator", notifications=True, sizing_mode="stretch_width")
 
-PURPOSE_OPTIONS = ["wing", "tail", "canard", "fin", "other"]
+SURFACE_COLORS = ("#2563a6", "#3b8554", "#7b55a3", "#a64b35", "#6b7280")
 TRIM_CONTROL_OPTIONS = ["fixed", "whole_surface", "elevator"]
 REFERENCE_MODES = ["surface", "selected_surfaces", "manual"]
 DRAG_MODELS = list(BODY_DRAG_MODELS)
@@ -80,6 +80,19 @@ MASS_TOOLTIPS = {
     "density": "Material density used when mass is blank [kg/m³].",
     "skin_thickness": "Shell/skin thickness used by surface_area [m].",
 }
+BODY_TOOLTIPS = {
+    "drag_model": "streamlined_body: skin friction × form factor on wetted area. drag_area: the entered CD × frontal area.",
+    "length": "Body length along x [m]; also sets the Reynolds number.",
+    "diameter": "Diameter of a round cross-section [m]; leave blank when width/height are used.",
+    "width": "Width of an elliptical or rectangular cross-section [m].",
+    "height": "Height of an elliptical or rectangular cross-section [m]; blank means equal to width.",
+    "x_nose": "Body-axis x of the nose [m aft]; used for drawing and attached masses.",
+    "y": "Centreline y position [m right].",
+    "z": "Centreline z position [m up].",
+    "count": "How many identical items; multiplies drag and attached mass.",
+    "drag_area": "drag_area model only: CD × frontal area per item [m²]. Round tube ≈ 0.9, faired leg ≈ 0.25, streamline strut ≈ 0.10, wheel ≈ 0.3–0.5 times frontal area.",
+    "cone_fraction": "streamlined_body only: fraction of the length taken by the tapered nose and tail together; reduces wetted area and volume. 0.4 is typical.",
+}
 CASE_TOOLTIPS = {
     "speed": "True airspeed for this operating condition [m/s].",
     "altitude": "Geometric altitude for the atmosphere model [m].",
@@ -88,7 +101,6 @@ CASE_TOOLTIPS = {
     "interference": "Fractional drag-area markup for component interference; 0.05 means +5%.",
     "protuberance": "Fractional drag-area markup for exposed hardware and excrescences; 0.10 means +10%.",
     "f_other": "Additional dimensional drag area not represented by a component [m²].",
-    "cooling": "Cooling-flow drag coefficient on aircraft reference area.",
     "transition": "Natural leaves transition free; forced uses the entered upper/lower x/c locations.",
     "n_crit": "Boundary-layer disturbance level for the airfoil model; 9 is smooth, low-turbulence flow.",
     "xtr_upper": "Forced upper-surface transition location x/c; 1.0 means no forced trip.",
@@ -101,6 +113,23 @@ PYTHON_GUIDE = r"""
 Save the `.flightlab.json` file beside your script. Treat it as the unchanged
 baseline, make a fresh copy for each candidate, validate the copy, then collect
 named results. FlightLab uses SI units and human-facing angles are in degrees.
+The source code and full documentation are in the
+[FlightLab repository](https://github.com/byuflowlab/flightlab).
+
+### Run scripts with FlightLab's Python
+
+The student launcher installs its own private Python with FlightLab already
+available. Run a script with that interpreter, or select it as the interpreter
+in VS Code or another editor:
+
+| System | Python with FlightLab |
+|---|---|
+| macOS / Linux | `~/.local/share/flightlab/env/bin/python my_study.py` |
+| Windows | `%LOCALAPPDATA%\FlightLab\env\Scripts\python.exe my_study.py` |
+
+Keep the launcher window open while you work in the workbench; closing it does
+not affect scripts. If you installed FlightLab yourself with `uv`, `pip`, or
+`conda`, use that environment's Python instead.
 
 ### Find and change inputs
 
@@ -367,7 +396,6 @@ class Workbench:
 
         self.surface_select = pn.widgets.Select(label="Lifting surface")
         self.surface_name = pn.widgets.TextInput(label="Surface name")
-        self.surface_purpose = pn.widgets.Select(label="Purpose", options=PURPOSE_OPTIONS)
         self.surface_trim_control = pn.widgets.Select(
             label="Pitch-trim control", options=TRIM_CONTROL_OPTIONS
         )
@@ -400,9 +428,9 @@ class Workbench:
         self.body_table = _table(
             pd.DataFrame(), height=250,
             editors={
-                **{name: {"type": "number"} for name in ("length", "width", "height", "diameter", "x_nose", "y", "z", "count", "drag_area", "cone_fraction")},
+                **{name: {"type": "number"} for name in ("length", "diameter", "width", "height", "x_nose", "y", "z", "count", "drag_area", "cone_fraction")},
                 "drag_model": {"type": "list", "values": DRAG_MODELS},
-            }, configuration={"layout": "fitDataTable"},
+            }, configuration={"layout": "fitDataTable"}, header_tooltips=BODY_TOOLTIPS,
         )
         self.add_body_button = pn.widgets.Button(label="Add body/component", icon="plus")
         self.delete_body_button = pn.widgets.Button(label="Delete selected", icon="trash")
@@ -420,7 +448,7 @@ class Workbench:
             editors={
                 **{name: {"type": "number"} for name in (
                     "speed", "altitude", "load_factor", "alpha_deg", "interference",
-                    "protuberance", "f_other", "cooling",
+                    "protuberance", "f_other",
                     "n_crit", "xtr_upper", "xtr_lower",
                 )},
                 "transition": {"type": "list", "values": ["natural", "forced"]},
@@ -654,10 +682,9 @@ class Workbench:
             "reference_area": "Manual coefficient reference area Sref [m²].",
             "reference_span": "Manual coefficient reference span bref [m].",
             "reference_chord": "Manual coefficient reference chord cref [m].",
-            "surface_purpose": "Sets defaults only: 'wing' is the default coefficient reference and spar surface, 'fin' is the surface the handbook drag adapter treats as the vertical tail. The solver reads geometry, not this label.",
-            "surface_trim_control": "Geometry the trim solver may deflect to balance pitching moment.",
+            "surface_trim_control": "What the trim solver may deflect to zero the pitching moment: 'whole_surface' rotates the entire surface, 'elevator' deflects only the chord aft of the hinge. Positive is trailing-edge down.",
             "surface_symmetric": "Reflect this stored half-surface across the aircraft centerline.",
-            "surface_control_hinge": "Chord fraction measured aft from the leading edge.",
+            "surface_control_hinge": "Elevator hinge location as a chord fraction aft of the leading edge.",
             "surface_control_min": "Minimum incidence/elevator deflection available to the trim solver [deg].",
             "surface_control_max": "Maximum incidence/elevator deflection available to the trim solver [deg].",
             "airfoil_select": "Airfoil used by the standalone section analysis.",
@@ -714,7 +741,6 @@ class Workbench:
 
         self.surface_select.param.watch(self._surface_selected, "value")
         self.surface_name.param.watch(self._surface_metadata_changed, "value")
-        self.surface_purpose.param.watch(self._surface_metadata_changed, "value")
         self.surface_trim_control.param.watch(self._surface_metadata_changed, "value")
         self.surface_control_hinge.param.watch(self._surface_metadata_changed, "value")
         self.surface_control_min.param.watch(self._surface_metadata_changed, "value")
@@ -838,7 +864,7 @@ class Workbench:
         self.reference_area.value = project.reference.area or 1.0
         self.reference_span.value = project.reference.span or 1.0
         self.reference_chord.value = project.reference.chord or 0.2
-        self.body_table.value = pd.DataFrame([asdict(body) for body in project.bodies])
+        self.body_table.value = pd.DataFrame([self._body_record(body) for body in project.bodies])
         self.mass_table.value = pd.DataFrame([
             {**asdict(item), "distributed": item.distributed or "point"}
             for item in project.masses
@@ -1256,7 +1282,6 @@ class Workbench:
             return
         self._updating = True
         self.surface_name.value = surface.name
-        self.surface_purpose.value = surface.purpose
         self.surface_trim_control.value = surface.trim_control
         self.surface_control_hinge.value = surface.control_hinge_fraction
         self.surface_control_min.value = surface.control_min_deg
@@ -1278,7 +1303,6 @@ class Workbench:
             return
         old_name = surface.name
         surface.name = self.surface_name.value.strip() or old_name
-        surface.purpose = self.surface_purpose.value
         surface.trim_control = self.surface_trim_control.value
         surface.control_hinge_fraction = float(self.surface_control_hinge.value)
         surface.control_min_deg = float(self.surface_control_min.value)
@@ -1393,7 +1417,7 @@ class Workbench:
     def _add_surface(self, _):
         index = len(self.project.surfaces) + 1
         surface = LiftingSurface(
-            f"Surface {index}", "other", "fixed", True,
+            f"Surface {index}", "fixed", True,
             [SurfaceStation(0.5, 0, 0, 0.2), SurfaceStation(0.55, 0.3, 0, 0.12)],
         )
         self.project.surfaces.append(surface)
@@ -1435,17 +1459,28 @@ class Workbench:
 
     # -- row-table editors ------------------------------------------------
 
+    BODY_COLUMNS = (
+        "name", "drag_model", "length", "diameter", "width", "height",
+        "x_nose", "y", "z", "count", "drag_area", "cone_fraction",
+    )
+
+    @classmethod
+    def _body_record(cls, body):
+        """Table row for a body, with the drag model next to the name."""
+        row = asdict(body)
+        return {name: row[name] for name in cls.BODY_COLUMNS}
+
     def _bodies_changed(self, event):
         if self._updating:
             return
         try:
             schema = [
-                ("name", str, False), ("length", float, False),
+                ("name", str, False), ("drag_model", str, False),
+                ("length", float, False), ("diameter", float, True),
                 ("width", float, True), ("height", float, True),
-                ("diameter", float, True), ("x_nose", float, True),
-                ("y", float, False), ("z", float, False),
-                ("count", int, False), ("drag_model", str, False),
-                ("drag_area", float, True), ("cone_fraction", float, False),
+                ("x_nose", float, True), ("y", float, False), ("z", float, False),
+                ("count", int, False), ("drag_area", float, True),
+                ("cone_fraction", float, False),
             ]
             self.project.bodies = [BodyDefinition(**row) for row in _coerce_records(event.new, schema, "Body")]
             self._refresh_all("Body geometry updated.")
@@ -1483,8 +1518,7 @@ class Workbench:
                 ("name", str, False), ("speed", float, False), ("altitude", float, False),
                 ("load_factor", float, False), ("alpha_deg", float, False),
                 ("interference", float, False), ("protuberance", float, False),
-                ("f_other", float, False), ("cooling", float, False),
-                ("transition", str, False),
+                ("f_other", float, False), ("transition", str, False),
                 ("n_crit", float, False), ("xtr_upper", float, False),
                 ("xtr_lower", float, False),
             ]
@@ -1547,7 +1581,7 @@ class Workbench:
             table.selection = []
 
     def _add_body(self, _):
-        self._append_table_row(self.body_table, asdict(BodyDefinition("new body", 0.5, diameter=0.08)))
+        self._append_table_row(self.body_table, self._body_record(BodyDefinition("new body", 0.5, diameter=0.08)))
 
     def _delete_body(self, _):
         self._delete_table_row(self.body_table)
@@ -1580,7 +1614,7 @@ class Workbench:
         ordered = [
             "name", "speed", "altitude", "load_factor", "alpha_deg",
             "interference", "protuberance", "transition", "n_crit",
-            "xtr_upper", "xtr_lower", "f_other", "cooling",
+            "xtr_upper", "xtr_lower", "f_other",
         ]
         return {name: row[name] for name in ordered}
 
@@ -1976,10 +2010,9 @@ class Workbench:
         ax_plan = fig.add_subplot(222)
         ax_side = fig.add_subplot(223)
         ax_front = fig.add_subplot(224)
-        colors = {"wing": "#2563a6", "tail": "#3b8554", "canard": "#7b55a3", "fin": "#a64b35", "other": "#6b7280"}
-        for surface in self.project.surfaces:
+        for index, surface in enumerate(self.project.surfaces):
             stations = surface.stations
-            color = colors.get(surface.purpose, "0.4")
+            color = SURFACE_COLORS[index % len(SURFACE_COLORS)]
             for sign in ([1, -1] if surface.symmetric else [1]):
                 y = np.array([station.y * sign for station in stations])
                 xle = np.array([station.x_le for station in stations])
@@ -2137,7 +2170,7 @@ class Workbench:
             self.surface_summary_table.value = pd.DataFrame([
                 {
                     "surface": surface.name,
-                    "purpose": surface.purpose, "trim control": surface.trim_control,
+                    "trim control": surface.trim_control,
                     "area [m²]": surface.area, "span/height [m]": surface.span,
                     "MAC [m]": surface.mac, "AC x [m]": surface.aerodynamic_center_x,
                     "stations": len(surface.stations),
@@ -2194,9 +2227,8 @@ class Workbench:
     def _refresh_mass_geometry(self, components, mass_properties):
         """Draw mass locations in the tab where students edit those masses."""
         fig, (ax_plan, ax_side) = plt.subplots(1, 2, figsize=(10.4, 4.4))
-        colors = {"wing": "#2563a6", "tail": "#3b8554", "canard": "#7b55a3", "fin": "#a64b35", "other": "#6b7280"}
-        for surface in self.project.surfaces:
-            color = colors.get(surface.purpose, "0.5")
+        for index, surface in enumerate(self.project.surfaces):
+            color = SURFACE_COLORS[index % len(SURFACE_COLORS)]
             for sign in ([1, -1] if surface.symmetric else [1]):
                 x_le = np.array([station.x_le for station in surface.stations])
                 chord = np.array([station.chord for station in surface.stations])
@@ -2283,7 +2315,7 @@ class Workbench:
             buildup = drag.buildup(
                 self.project.equivalent_aircraft(), case.speed, altitude=case.altitude,
                 interference=case.interference, protuberance=case.protuberance,
-                f_other=case.f_other, cooling=case.cooling,
+                f_other=case.f_other,
             )
             body_names = {body.name for body in self.project.bodies}
             rows = [row for row in buildup.rows if row.name in body_names]
@@ -2511,7 +2543,7 @@ class Workbench:
                 np.r_[0.0, position], np.r_[view.ccl[0], view.ccl],
                 label=f"{surface.name} actual",
             )[0]
-            if surface.purpose == "wing":
+            if not surface.is_vertical:
                 eta = np.clip(2.0 * position / surface.span, 0.0, 1.0)
                 ellipse_shape = np.sqrt(np.clip(1.0 - eta**2, 0.0, None))
                 denominator = np.sum(ellipse_shape * view.ds)
@@ -3020,31 +3052,12 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
     def view(self):
         station_help = pn.pane.Markdown(
             "Each row is a real defining section. Coordinates are absolute body axes: "
-            "**x aft, y right, z up**, in metres. Surfaces are linearly lofted between rows. "
+            "**x aft, y right, z up**, in metres. Surfaces are linearly lofted between rows, and "
+            "dihedral, or whether a surface is a fin, comes from these coordinates. "
             "The airfoil field is a selector containing bundled, NACA, and imported project airfoils."
         )
-        role_help = pn.pane.Alert(
-            "These fields have separate jobs. The vortex lattice meshes **every mirrored surface** from "
-            "its stations, so wings, tails, V-tails, and twin fins all enter the symmetric longitudinal "
-            "solve at their true dihedral; a single centerline fin is skipped because it carries no load "
-            "in symmetric flight. There is no orientation setting: dihedral, and whether a surface is a "
-            "fin, come from the stations. **Purpose** only sets defaults: a *wing* surface is the default "
-            "coefficient reference and spar surface, and *fin* names the surface the handbook drag "
-            "adapter treats as the vertical tail. Any surface may be the coefficient reference, the spar "
-            "surface, or the pitch-trim control; a near-vertical trim surface simply has little pitch "
-            "authority, and the trim solve will say so. "
-            "**Pitch-trim control = whole_surface** rotates the complete surface; **elevator** "
-            "deflects only the camber line aft of the entered hinge. Positive elevator deflection is "
-            "trailing-edge down. The solver varies aircraft angle of attack and one shared control "
-            "deflection while it solves lift = weight and pitching moment = 0. "
-            "The aircraft-level coefficient reference is selected separately, so biplanes and tandem "
-            "wings do not need to misuse a role label. If the required deflection is outside the entered "
-            "limits—or the control has insufficient authority—the analysis reports that trim is not possible.",
-            alert_type="light",
-        )
         surface_controls = pn.Row(
-            self.surface_select, self.surface_name,
-            self.surface_purpose, self.surface_trim_control,
+            self.surface_select, self.surface_name, self.surface_trim_control,
             self.surface_symmetric, sizing_mode="stretch_width",
         )
         control_geometry = pn.Row(
@@ -3089,7 +3102,7 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             "Span-loading values are reported at panel centers. Results are cached by flight-case name. "
             "Any geometry or panel-count edit deletes every cached case, so stale results cannot be "
             "revisited. Every analyzed surface is plotted against distance from its root measured along "
-            "the surface; each surface whose purpose is ‘wing’ also "
+            "the surface; each horizontal surface also "
             "gets its own same-lift ellipse. For a biplane these are separate diagnostics, not a single "
             "whole-aircraft optimum. Aircraft CLmax is estimated where the first local section cl "
             "touches its airfoil clmax at the strip Reynolds number.",
@@ -3119,16 +3132,14 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             pn.Row(self.run_loads_button, self.loads_download),
         )
         body_help = pn.pane.Markdown(
-            "Bodies contribute **parasite-drag geometry**, not mass. Use **streamlined_body** for a "
-            "fuselage, nacelle, or boom: skin friction × form factor on the wetted area its dimensions imply. "
-            "Use **drag_area** for everything else (gear legs, wheels, struts, pods, antennas) and enter "
-            "`drag_area` = C<sub>D</sub> × frontal area in m² per item; `count` multiplies it. Typical "
-            "C<sub>D</sub> on frontal area: round tube or unfaired gear leg ≈ 0.9, faired leg ≈ 0.25, "
-            "streamline-section strut ≈ 0.10, exposed wheel ≈ 0.3–0.5. Enter `diameter` for a round "
-            "section, or `width` and `height` for an elliptical/rectangular effective section. `x_nose` "
-            "is the nose's body-axis x position. `cone_fraction` is the combined fraction of body length "
-            "used for tapered nose/tail regions when estimating wetted area and volume. The result table "
-            "states the area and correlation actually used."
+            "Bodies contribute **parasite drag**, not mass; add their mass in the Mass tab.\n\n"
+            "- **streamlined_body** (fuselage, nacelle, boom): fill in `length`, `diameter` or "
+            "`width` + `height`, and `cone_fraction`. Drag is skin friction × form factor on the "
+            "wetted area these imply.\n"
+            "- **drag_area** (gear, wheels, struts, pods, antennas): fill in `drag_area` = "
+            "C<sub>D</sub> × frontal area per item; dimensions are optional and only draw the body.\n\n"
+            "`count` multiplies either result; `x_nose`, `y`, `z` place the body for drawing and "
+            "attached masses. Hover a column header for details and typical values."
         )
         mass_help = pn.pane.Alert(
             "Choose how each component's mass is distributed. If **mass** is entered, geometry only "
@@ -3210,7 +3221,7 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             )),
             ("Airfoils", pn.Column(airfoil_controls, self.airfoil_metrics, self.airfoil_plot, "### Model diagnostics", self.airfoil_diagnostics)),
             ("Lifting surfaces", pn.Column(
-                station_help, role_help, surface_controls, control_geometry,
+                station_help, surface_controls, control_geometry,
                 self.station_table, surface_buttons,
                 pn.pane.Alert(
                     "The preview below shows only the selected lifting surface and its body-axis panel topology; masses, bodies, and propulsion markers are intentionally omitted.",

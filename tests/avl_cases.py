@@ -39,7 +39,7 @@ def simple_wing():
     project.name = "AVL simple wing"
     project.bodies, project.masses = [], []
     project.structure.surface = ""
-    project.surfaces = [LiftingSurface("simple", "wing", "fixed", True, [
+    project.surfaces = [LiftingSurface("simple", "fixed", True, [
         SurfaceStation(0.0, 0.0, 0.0, 2.2, 2.0, "naca0012"),
         SurfaceStation(0.4, 7.5, 0.0, 1.8, 2.0, "naca0012"),
     ])]

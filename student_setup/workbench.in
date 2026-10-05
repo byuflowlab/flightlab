@@ -6,3 +6,6 @@
 # file to change what the workbench needs; never edit the generated pins.
 panel>=1.9,<2
 pandas>=1.5
+# Colours the code blocks in the workbench's Python tab (Panel's Markdown pane
+# highlights fenced code only when Pygments is importable).
+pygments>=2.0

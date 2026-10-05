@@ -874,7 +874,7 @@ def profile_drag_buildup(
     case = project.case() if case is None else case
     handbook = drag.buildup(
         project.equivalent_aircraft(), case.speed, altitude=case.altitude,
-        interference=0.0, protuberance=0.0, f_other=0.0, cooling=0.0,
+        interference=0.0, protuberance=0.0, f_other=0.0,
     )
     body_names = {body.name for body in project.bodies}
     rows = []
@@ -891,7 +891,7 @@ def profile_drag_buildup(
     return ProjectDragBuildup(
         rows=tuple(rows), S_ref=project.reference_quantities()[0],
         interference=case.interference, protuberance=case.protuberance,
-        f_other=case.f_other + case.cooling, V=case.speed,
+        f_other=case.f_other, V=case.speed,
         altitude=case.altitude, mach=float(atmos.at(case.altitude).mach(case.speed)),
         skipped=handbook.skipped,
     )

@@ -78,6 +78,12 @@ Then commit and promote as usual. Do not edit the block between `BEGIN PINS`
 and `END PINS` by hand; rerun the script instead. Editing `workbench.in`
 (for example to move to a new Panel major version) also requires rerunning it.
 
+To add or drop a package during the semester without moving any other pin,
+run `python student_setup/update_pins.py --keep` after editing `workbench.in`.
+Every package already pinned stays at its current version and only the new
+requirement is resolved, so the diff in `pyproject.toml` is the one line you
+meant to change.
+
 ## Resetting a student's installation
 
 A student whose installed environment is broken, for whatever reason, can force

@@ -9,7 +9,7 @@ from flightlab.project_analysis import analyze_dynamic_stability, derivatives
 
 
 def _ventral_fin():
-    return LiftingSurface("Ventral fin", "other", "fixed", False, [
+    return LiftingSurface("Ventral fin", "fixed", False, [
         SurfaceStation(0.70, 0.00, 0.02, 0.16, 0.0, "naca0012"),
         SurfaceStation(0.78, 0.00, -0.12, 0.08, 0.0, "naca0012"),
     ])
@@ -37,17 +37,6 @@ def test_a_fourth_surface_enters_the_derivative_solve():
     assert d1.Cn_r < d0.Cn_r
     # It sits below the CG, so it also changes the roll coupling.
     assert d1.Cl_beta != pytest.approx(d0.Cl_beta)
-
-
-def test_purpose_labels_do_not_change_the_derivatives():
-    labelled = example_project()
-    relabelled = deepcopy(labelled)
-    for surface in relabelled.surfaces:
-        surface.purpose = "other"
-    d0 = derivatives(labelled, ns=10, nc=3)
-    d1 = derivatives(relabelled, ns=10, nc=3)
-    for name in ("CL_alpha", "Cm_alpha", "Cn_beta", "Cl_beta", "Cl_p", "Cn_r"):
-        assert getattr(d1, name) == pytest.approx(getattr(d0, name))
 
 
 def test_dynamic_modes_include_the_fourth_surface_and_carry_no_adapter_caveats():
@@ -88,10 +77,10 @@ def test_an_isolated_fin_matches_the_same_panel_laid_flat():
     project.reference.mode = "manual"
     project.reference.area, project.reference.span, project.reference.chord = 0.06, 0.3, 0.2
     root = SurfaceStation(0.0, 0.0, 0.0, 0.2, 0.0, "naca0012")
-    project.surfaces = [LiftingSurface("Fin", "fin", "fixed", False,
+    project.surfaces = [LiftingSurface("Fin", "fixed", False,
                                        [root, SurfaceStation(0.0, 0.0, 0.3, 0.2, 0.0, "naca0012")])]
     fin = derivatives(project, alpha=0.0, x_ref=0.05, ns=16, nc=4)
-    project.surfaces = [LiftingSurface("Half wing", "wing", "fixed", False,
+    project.surfaces = [LiftingSurface("Half wing", "fixed", False,
                                        [root, SurfaceStation(0.0, 0.3, 0.0, 0.2, 0.0, "naca0012")])]
     flat = derivatives(project, alpha=0.0, x_ref=0.05, ns=16, nc=4)
     assert -fin.CY_beta == pytest.approx(flat.CL_alpha, rel=1e-3)

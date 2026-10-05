@@ -130,7 +130,7 @@ flightlab workbench
 It opens locally in a browser. No FlightLab server or account is involved. A project contains:
 
 - any number of piecewise-linear lifting surfaces, defined by editable station tables;
-- independent surface orientation, descriptive purpose, and pitch-trim incidence control;
+- a pitch-trim control choice for every surface;
 - coefficient reference quantities derived from one surface, a selected set of surfaces
   (such as both wings of a biplane), or manually entered values;
 - a different airfoil at every station, including imported `.dat` coordinates;
@@ -139,6 +139,27 @@ It opens locally in a browser. No FlightLab server or account is involved. A pro
 - several named flight conditions and drag assumptions;
 - project-owned editable motor, propeller, battery, and ESC definitions; one shared battery
   may feed any number of independently positioned propulsors.
+
+### Lifting-surface roles and pitch trim
+
+The vortex lattice meshes every mirrored surface from its stations, so wings, tails, V-tails,
+and twin fins all enter the symmetric longitudinal solve at their true dihedral; a single
+centreline fin is skipped because it carries no load in symmetric flight. There is no
+orientation setting: dihedral, and whether a surface is a fin, come from the station
+coordinates.
+
+There is no wing/tail/fin label either. Any surface may be the coefficient reference, the spar
+surface, or the pitch-trim control; a near-vertical trim surface simply has little pitch
+authority, and the trim solve says so. When the coefficient reference is not a single named
+surface, the first listed surface is the default spar surface until one is chosen. The
+aircraft-level coefficient reference is selected separately, so biplanes and tandem wings need
+no special treatment.
+
+**Pitch-trim control** `whole_surface` rotates the complete surface; `elevator` deflects only the
+camber line aft of the entered hinge. Positive elevator deflection is trailing-edge down. The
+solver varies aircraft angle of attack and one shared control deflection while it solves
+lift = weight and pitching moment = 0. If the required deflection is outside the entered limits,
+or the control has insufficient authority, the analysis reports that trim is not possible.
 
 The **Analysis** tab runs mass and CG, full-station VLM, longitudinal trim, lifting-surface
 neutral point, and component profile/body drag as one design point. It also plots the aircraft
@@ -162,9 +183,9 @@ speed, load factor, and panel resolution remain explicit analysis inputs.
 The generated Python uses the same project-level `analyze_structure` entry point as the
 workbench, keeping the structures example at the same abstraction level as aerodynamics,
 propulsion, and dynamic stability.
-Dynamic lifting-surface derivatives currently use the equivalent-surface adapter, augmented
-with empirical slender-body/crossflow derivatives and fixed-throttle propulsion derivatives;
-those limitations are shown next to the results.
+Dynamic lifting-surface derivatives come from the full-station vortex lattice solved without
+a symmetry condition, augmented with empirical slender-body/crossflow body increments and
+fixed-throttle propulsion derivatives; those limitations are shown next to the results.
 
 Mass rows can attach a known total mass to a lifting surface or body so that CG and inertia
 follow the geometry. A density can instead determine mass from solid volume, or from wetted
