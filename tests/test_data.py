@@ -268,7 +268,7 @@ def test_load_rejects_an_unknown_section_clearly():
 
 # --- propellers -------------------------------------------------------------
 
-CATALOG_PROPS = ["apce_8x6", "apce_9x6", "apce_10x5", "apce_10x7", "apce_11x7"]
+CATALOG_PROPS = ["apce_8x6", "apcsf_9x4.7", "apcsf_10x4.7"]
 
 
 def test_all_catalog_propellers_are_bundled():
@@ -301,7 +301,10 @@ def test_efficiency_identity_holds_in_the_data_files(name):
     """HW 8's 'identity, two ways': eta must equal J*CT/CP."""
     p = props.load(name)
     for r in p.runs:
-        assert np.nanmax(np.abs(r.eta - r.eta_check)) < 0.01
+        # Past zero thrust the tabulated eta is a large negative ratio of two
+        # three-decimal numbers, and rounding alone moves it by hundredths.
+        producing = r.eta > 0.0
+        assert np.nanmax(np.abs(r.eta - r.eta_check)[producing]) < 0.01
 
 
 @pytest.mark.parametrize("name", CATALOG_PROPS)
@@ -317,7 +320,7 @@ def test_measured_data_does_not_reach_zero_advance_ratio(name):
 
 
 def test_rpm_to_rad_per_second_conversion():
-    r = props.load("apce_10x7").run(5000)
+    r = props.load("apcsf_10x4.7").run(5000)
     assert r.omega == pytest.approx(r.rpm * 2 * np.pi / 60)
     assert r.n == pytest.approx(r.rpm / 60)
     assert r.omega / r.n == pytest.approx(2 * np.pi)
@@ -325,7 +328,7 @@ def test_rpm_to_rad_per_second_conversion():
 
 def test_static_thrust_of_the_rc1_propeller_is_a_few_hundred_grams():
     """HW 8's dimensional bound, applied to the data before any model."""
-    p = props.load("apce_10x7")
+    p = props.load("apcsf_10x4.7")
     CT = np.interp(6000.0, p.static.rpm, p.static.CT)
     T = CT * 1.225 * (6000.0 / 60.0) ** 2 * p.diameter**4
     grams = T / 9.80665 * 1000.0
@@ -339,7 +342,7 @@ def test_peak_measured_efficiency_is_plausible():
 
 
 def test_blade_geometry_is_present_where_uiuc_provides_it():
-    p = props.load("apce_10x7")
+    p = props.load("apcsf_10x4.7")
     g = p.geometry
     assert g is not None
     assert np.all(np.diff(g.r_R) > 0)
@@ -353,32 +356,41 @@ def test_blade_geometry_is_present_where_uiuc_provides_it():
 
 
 def test_catalog_is_the_stated_size():
-    assert len(catalog.MOTORS) == 4
-    assert len(catalog.PROPELLERS) == 5
-    assert len(catalog.BATTERIES) == 3
-    assert len(list(catalog.combinations())) == 60
+    assert len(catalog.MOTORS) == 3
+    assert len(catalog.PROPELLERS) == 3
+    assert len(catalog.BATTERIES) == 2
+    assert len(catalog.ESCS) == 1
+    assert len(list(catalog.combinations())) == 18
 
 
 def test_kv_unit_conversion():
-    m = catalog.MOTORS["M1000"]
-    assert m.Kv == pytest.approx(1000.0 * 2 * np.pi / 60)
+    m = catalog.MOTORS["M1100"]
+    assert m.Kv == pytest.approx(1100.0 * 2 * np.pi / 60)
     assert m.Kt == pytest.approx(1.0 / m.Kv)
     # the factor everyone gets wrong
     assert m.Kv_rpm / m.Kv == pytest.approx(60 / (2 * np.pi), rel=1e-12)
 
 
 def test_peak_efficiency_does_not_rank_with_kv():
-    """HW 7's central finding, guaranteed to be visible in this catalog."""
+    """HW 7's central finding, guaranteed to be visible in this catalog.
+
+    Peak efficiency depends on I0*R/V and not on Kv: with SunnySky's published
+    windings the middle-Kv motor has the best peak and the highest-Kv motor
+    the worst.  The current at which the peak sits is the other half of the
+    lesson, and it spans nearly a factor of three.
+    """
     V = 11.1
     by_kv = sorted(catalog.MOTORS.values(), key=lambda m: m.Kv_rpm)
     by_eta = sorted(catalog.MOTORS.values(), key=lambda m: m.peak_efficiency(V))
     assert [m.key for m in by_kv] != [m.key for m in by_eta]
-    # and it does rank with I0*R
     by_i0r = sorted(
         catalog.MOTORS.values(),
         key=lambda m: -m.current_no_load * m.resistance,
     )
     assert [m.key for m in by_i0r] == [m.key for m in by_eta]
+    assert by_eta[-1].key == "M1260"
+    at_peak = {k: float(m.current_at_peak_efficiency(V)) for k, m in catalog.MOTORS.items()}
+    assert at_peak["M1400"] / at_peak["M1260"] > 2.5
 
 
 def test_motor_peak_efficiency_matches_the_reference_closed_form():
@@ -389,31 +401,23 @@ def test_motor_peak_efficiency_matches_the_reference_closed_form():
 
 
 def test_battery_energy_and_voltage_bookkeeping():
-    b = catalog.BATTERIES["B3S1300"]
+    b = catalog.BATTERIES["B3S1000"]
     assert b.voltage_nominal == pytest.approx(11.1)
-    assert b.capacity == pytest.approx(1.3 * 3600)
-    assert b.energy_nominal / 3600 == pytest.approx(11.1 * 1.3, rel=1e-9)
-    assert b.resistance == pytest.approx(0.012 * 3)
+    assert b.capacity == pytest.approx(1.0 * 3600)
+    assert b.energy_nominal / 3600 == pytest.approx(11.1 * 1.0, rel=1e-9)
+    assert b.resistance == pytest.approx(0.013 * 3)
     assert 100 < b.specific_energy / 3600 < 180  # Wh/kg, plausible for LiPo
 
 
 def test_rc1_baseline_matches_the_fleet_page():
     m, p, b = catalog.RC1_BASELINE
-    assert catalog.MOTORS[m].Kv_rpm == 1000.0
-    assert catalog.PROPELLERS[p].data == "apce_10x7"
+    assert catalog.MOTORS[m].Kv_rpm == 1260.0
+    assert catalog.PROPELLERS[p].data == "apcsf_10x4.7"
     assert catalog.BATTERIES[b].cells_series == 3
-    assert catalog.BATTERIES[b].capacity_ah == pytest.approx(1.300)
+    assert catalog.BATTERIES[b].capacity_ah == pytest.approx(1.000)
     # the pack mass must match the battery row of RC-1's component table
     row = next(c for c in fleet.RC1.components if c.name == "Battery")
     assert catalog.BATTERIES[b].mass == pytest.approx(row.mass)
-
-
-def test_provisional_entries_are_declared():
-    """The motor and battery electricals are placeholders and must say so."""
-    flags = catalog.check_provisional()
-    assert set(flags["motors"]) == set(catalog.MOTORS)
-    assert set(flags["batteries"]) == set(catalog.BATTERIES)
-    assert flags["propellers"] == []  # the propeller data is real and measured
 
 
 def test_catalog_propellers_all_resolve_to_bundled_data():

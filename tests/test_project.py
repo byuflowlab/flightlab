@@ -119,18 +119,17 @@ def test_reference_geometry_sums_the_selected_surfaces():
 
 def test_measured_propulsion_components_are_owned_by_saved_project():
     project = example_project()
-    project.motors["M1000"] = replace(
-        project.motors["M1000"], resistance=0.087, current_no_load=0.73,
-        provisional=False, notes="Measured on course thrust stand",
+    project.motors["M1260"] = replace(
+        project.motors["M1260"], resistance=0.087, current_no_load=0.73,
+        notes="Measured on course thrust stand",
     )
-    project.batteries["B3S1300"] = replace(
-        project.batteries["B3S1300"], cell_resistance=0.009, provisional=False,
+    project.batteries["B3S1000"] = replace(
+        project.batteries["B3S1000"], cell_resistance=0.009,
     )
 
     restored = AircraftProject.from_json(project.to_json())
     propulsor = restored.propulsion.propulsors[0]
     assert restored.motor(propulsor).resistance == pytest.approx(0.087)
-    assert restored.motor(propulsor).provisional is False
     assert restored.battery().cell_resistance == pytest.approx(0.009)
 
 
@@ -144,7 +143,7 @@ def test_shared_battery_and_multiple_propulsors_supply_positioned_masses():
     components = {component.name: component for component in project.propulsion_components()}
 
     assert list(name for name in components if name.startswith("Propulsion battery")) == [
-        "Propulsion battery (B3S1300)"
+        "Propulsion battery (B3S1000)"
     ]
     assert components["Left propulsor hardware"].y == pytest.approx(-0.30)
     assert components["Right propulsor hardware"].y == pytest.approx(0.30)
@@ -185,3 +184,48 @@ def test_saved_cooling_drag_folds_into_f_other():
     project = AircraftProject.from_dict(data)
     assert project.cases[0].f_other == pytest.approx(0.003)
     assert not hasattr(project.cases[0], "cooling")
+
+
+def test_a_file_saved_with_the_first_catalog_gets_the_stocked_parts():
+    """Pre-October-2026 files carry placeholder motors and propellers whose
+    UIUC data no longer ships; they are identified by the old provisional flag."""
+    import json
+
+    project = example_project()
+    data = json.loads(project.to_json())
+    data["motors"] = {"M1000": {
+        "key": "M1000", "name": "generic A2212-13T, 1000 Kv", "Kv_rpm": 1000.0,
+        "resistance": 0.1, "current_no_load": 0.85, "current_max": 13.0,
+        "mass": 0.05, "no_load_voltage": 11.1, "cells_min": 2, "cells_max": 3,
+        "provisional": True, "notes": "",
+    }}
+    data["batteries"] = {"B3S1300": {
+        "key": "B3S1300", "name": "3S 11.1 V 1300 mAh 45C LiPo", "cells_series": 3,
+        "cells_parallel": 1, "capacity_ah": 1.3, "mass": 0.115, "c_rating": 45.0,
+        "cell_resistance": 0.012, "cell_voltage_nominal": 3.7, "cell_voltage_full": 4.2,
+        "cell_voltage_empty": 3.0, "provisional": True, "notes": "",
+    }}
+    data["escs"] = {"ESC30": {"key": "ESC30", "name": "30 A", "current_max": 30.0,
+                              "mass": 0.025, "efficiency": 0.95, "provisional": True}}
+    data["propellers"] = {
+        "P10x7": {"key": "P10x7", "name": "APC 10x7E", "mass": 0.014, "data": "apce_10x7",
+                  "diameter": None, "pitch": None, "points": [], "notes": ""},
+        "Pmine": {"key": "Pmine", "name": "measured", "mass": 0.012, "data": "",
+                  "diameter": 0.254, "pitch": 0.15, "notes": "",
+                  "points": [{"rpm": 5000.0, "J": 0.2, "CT": 0.1, "CP": 0.05},
+                             {"rpm": 5000.0, "J": 0.5, "CT": 0.06, "CP": 0.045}]},
+    }
+    data["propulsion"]["battery"] = "B3S1300"
+    data["propulsion"]["propulsors"][0].update(motor="M1000", propeller="P10x7", esc="ESC30", x=-0.11)
+
+    restored = AircraftProject.from_json(json.dumps(data))
+    propulsor = restored.propulsion.propulsors[0]
+    assert set(restored.motors) == {"M1100", "M1260", "M1400"}
+    assert "Pmine" in restored.propellers and "P10x7" not in restored.propellers
+    assert propulsor.motor == "M1260" and propulsor.propeller == "P10x4.7"
+    assert propulsor.esc == "ESC40" and restored.propulsion.battery == "B3S1000"
+    assert propulsor.x == pytest.approx(-0.11)
+    assert restored.validate() == []
+    # and a file saved by this version is left alone
+    again = AircraftProject.from_json(restored.to_json())
+    assert again.propulsion.propulsors[0].motor == "M1260"

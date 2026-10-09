@@ -150,18 +150,18 @@ print(tr.alpha, tr.tail_incidence, tr.static_margin)""",
             "propulsion.motor_point and propulsion.battery_voltage — component behavior",
             "propulsion.rotor_hover and propulsion.turbofan_thrust — rotor and jet course models",
         ),
-        inputs=("motor, propeller, battery, and ESC", "speed [m/s], altitude [m], throttle, and state of charge", "measured or provisional electrical properties"),
+        inputs=("motor, propeller, battery, and ESC", "speed [m/s], altitude [m], throttle, and state of charge", "datasheet or measured electrical properties"),
         outputs=("thrust, torque, rpm, advance ratio, and tip speed", "current, terminal voltage, and power at each stage", "stage efficiencies, constraint margins, and data-coverage flags"),
-        limits=("Catalog electrical values remain provisional until replaced by course measurements.", "A converged propeller solution may still be outside the measured advance-ratio range."),
+        limits=("Motor values are vendor datasheet figures and battery cell resistance is an estimate.", "A converged propeller solution may still be outside the measured advance-ratio range."),
         homework="HW 6; reused in HW 7",
         example="""from flightlab import catalog, propulsion
 
-motor = catalog.MOTORS["M1000"]
-prop = catalog.PROPELLERS["P10x7"]
-battery = catalog.BATTERIES["B3S1300"]
+motor = catalog.MOTORS["M1260"]
+prop = catalog.PROPELLERS["P10x4.7"]
+battery = catalog.BATTERIES["B3S1000"]
 op = propulsion.operating_point(
     motor, prop.data, battery,
-    V=9.1, altitude=1400.0, soc=0.90, esc="ESC30",
+    V=9.1, altitude=1400.0, soc=0.90, esc="ESC40",
 )
 print(op.thrust, op.current, op.extrapolated)""",
     ),

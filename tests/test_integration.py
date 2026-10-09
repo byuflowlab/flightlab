@@ -128,9 +128,9 @@ def test_rc1_wing_and_tail_trim_and_neutral_point():
 
 def test_rc1_propulsion_chain_pieces_are_consistent():
     """HW 8's inputs: the catalog, the measured data, and the momentum bound."""
-    m = catalog.MOTORS["M1000"]
-    b = catalog.BATTERIES["B3S1300"]
-    p = catalog.PROPELLERS["P10x7"].load()
+    m = catalog.MOTORS["M1100"]
+    b = catalog.BATTERIES["B3S1000"]
+    p = catalog.PROPELLERS["P10x4.7"].load()
 
     V = RC1.operating["cruise_speed"]
     _, _, rho, _ = atmosphere(RC1.operating["field_altitude"])

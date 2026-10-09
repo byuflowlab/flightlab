@@ -1207,7 +1207,7 @@ def analyze_propulsion(
             f"Shared battery current {at_case.current:.1f} A exceeds its "
             f"{battery.current_max:.1f} A continuous rating."
         )
-    for propulsor, point in zip(setup.propulsors, at_case.propulsors):
+    for i, (propulsor, point) in enumerate(zip(setup.propulsors, at_case.propulsors)):
         motor = project.motor(propulsor)
         esc = project.esc(propulsor)
         if point.current > motor.current_max:
@@ -1220,6 +1220,14 @@ def analyze_propulsion(
                 f"{propulsor.name}: current {point.current:.1f} A exceeds the "
                 f"{esc.current_max:.1f} A ESC limit."
             )
+        rpm_max = project.propeller(propulsor).rpm_max
+        if rpm_max is not None and rpm_max > 0:
+            fastest = max(unit.rpm for unit in (pt.propulsors[i] for pt in points))
+            if fastest > rpm_max:
+                warnings.append(
+                    f"{propulsor.name}: {fastest:.0f} rpm exceeds the propeller's "
+                    f"{rpm_max:.0f} rpm rating."
+                )
     return PropulsionAnalysis(
         operating_point=at_case, speed=speed,
         thrust_available=np.array([point.thrust for point in points]),

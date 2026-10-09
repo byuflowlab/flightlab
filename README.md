@@ -193,7 +193,7 @@ surface area when a skin thickness is also supplied. These are explicit mass-dis
 models, not automatic structural-weight predictions.
 
 The **Propulsion** tab starts with copies of the course catalog inside each project. Students
-can replace provisional motor and battery values with measurements, add components, and import
+can edit motor and battery values, add components, and import
 propeller coefficient CSV files with `rpm`, `J`, `CT`, and `CP` columns. The editable component
 library and measured propeller points are saved in the project JSON; no package source or global
 configuration file needs to be changed. Battery and propulsor positions also place their catalog
@@ -400,12 +400,11 @@ print(envelope["V_stall"], envelope["V_A"])
   public.
 - Several fleet geometries are simplified single trapezoids. A calculated value can be
   internally consistent without representing every detail of the real aircraft.
-- UIUC propeller data are measured, but the catalog's motor winding resistance, motor
-  no-load current, and battery internal resistance are provisional until course
-  thrust-stand measurements replace them.
+- UIUC propeller data are measured and the catalog motors carry SunnySky's published
+  winding resistance and no-load current, but battery internal resistance is an estimate.
 - Those electrical values are component inputs, not solver constants. Pass `Motor` and
   `Battery` objects to `propulsion.operating_point`; use `motor.with_measurements(...)` and
-  `battery.with_measurements(...)` to substitute measured values without editing the package.
+  `battery.with_measurements(...)` to substitute your own values without editing the package.
 - A propeller operating point outside measured advance ratio is an extrapolation even if
   the nonlinear solver converges. Check `op.extrapolated`, `op.well_covered`, and
   `op.extrapolated_reason`.

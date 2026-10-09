@@ -72,8 +72,8 @@ def test_every_named_draft5_homework_interface_exists():
 
     for name in ("RC1", "C172", "B787", "ASW27", "ASG29", "JobyS4"):
         assert getattr(flightlab.fleet, name) is not None
-    assert "B3S1300" in catalog.BATTERIES
-    assert "P10x7" in catalog.PROPELLERS
+    assert "B3S1000" in catalog.BATTERIES
+    assert "P10x4.7" in catalog.PROPELLERS
 
 
 def test_capability_browser_exposes_questions_inputs_outputs_and_examples(capsys):
@@ -136,8 +136,8 @@ def test_hw6_turbofan_model_uses_mach_and_accepts_arrays():
 
 
 def test_hw6_measured_electrical_parameters_are_component_inputs():
-    starter_motor = catalog.MOTORS["M1000"]
-    starter_battery = catalog.BATTERIES["B3S1300"]
+    starter_motor = catalog.MOTORS["M1100"]
+    starter_battery = catalog.BATTERIES["B3S1000"]
     measured_motor = starter_motor.with_measurements(
         resistance=0.085,
         current_no_load=0.78,
@@ -148,17 +148,14 @@ def test_hw6_measured_electrical_parameters_are_component_inputs():
     assert measured_motor.resistance == pytest.approx(0.085)
     assert measured_motor.current_no_load == pytest.approx(0.78)
     assert measured_battery.cell_resistance == pytest.approx(0.009)
-    assert not measured_motor.provisional
-    assert not measured_battery.provisional
-    assert starter_motor.provisional and starter_battery.provisional
 
     starter = propulsion.operating_point(
-        starter_motor, "apce_10x7", starter_battery,
-        V=9.1, altitude=1400.0, soc=0.9, esc="ESC30",
+        starter_motor, "apcsf_10x4.7", starter_battery,
+        V=9.1, altitude=1400.0, soc=0.9, esc="ESC40",
     )
     measured = propulsion.operating_point(
-        measured_motor, "apce_10x7", measured_battery,
-        V=9.1, altitude=1400.0, soc=0.9, esc="ESC30",
+        measured_motor, "apcsf_10x4.7", measured_battery,
+        V=9.1, altitude=1400.0, soc=0.9, esc="ESC40",
     )
     assert measured.current != pytest.approx(starter.current)
 

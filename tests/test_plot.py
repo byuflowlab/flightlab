@@ -218,14 +218,14 @@ def test_eigenvalues_multiple_sets_and_unstable_root():
 
 
 def test_prop_curves():
-    p = props.load("apce_10x7")
+    p = props.load("apcsf_10x4.7")
     aT, aP, aE = plot.prop_curves(p)
     assert aE.get_ylim() == (0.0, 1.0)
     assert "APC" in aT.get_title()
 
 
 def test_prop_curves_pooled():
-    aT, _, _ = plot.prop_curves(props.load("apce_9x6"), show_runs=False)
+    aT, _, _ = plot.prop_curves(props.load("apcsf_9x4.7"), show_runs=False)
     assert aT is not None
 
 

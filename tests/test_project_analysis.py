@@ -308,3 +308,14 @@ def test_root_strip_lift_is_smooth_across_the_centerline():
             view = analyze(project, ns=ns, nc=4).surface("Main wing")
             inboard = view.cl[:4]
             assert np.all(np.abs(inboard - inboard[1]) < 0.01 * inboard[1]), (project.name, ns, inboard)
+
+
+def test_propulsion_warns_when_the_propeller_is_spun_past_its_rating():
+    """APC rates the 10x4.7 slow flyer to 6,500 rpm; the starter spins it past that."""
+    project = example_project()
+    result = analyze_propulsion(project, speed=[9.0])
+    assert any("6500 rpm rating" in w for w in result.warnings), result.warnings
+
+    project.propellers["P10x4.7"].rpm_max = None
+    quiet = analyze_propulsion(project, speed=[9.0])
+    assert not any("rpm rating" in w for w in quiet.warnings)

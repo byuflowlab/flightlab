@@ -1700,7 +1700,7 @@ class Workbench:
                 ("resistance", float, False), ("current_no_load", float, False),
                 ("current_max", float, False), ("mass", float, False),
                 ("no_load_voltage", float, False), ("cells_min", int, False),
-                ("cells_max", int, False), ("provisional", bool, False), ("notes", str, True),
+                ("cells_max", int, False), ("notes", str, True),
             ]
             rows = _coerce_records(event.new, schema, "Motor")
             values = [catalog.Motor(**{**row, "notes": self._optional_text(row, "notes")}) for row in rows]
@@ -1722,7 +1722,7 @@ class Workbench:
                 ("mass", float, False), ("c_rating", float, False),
                 ("cell_resistance", float, False), ("cell_voltage_nominal", float, False),
                 ("cell_voltage_full", float, False), ("cell_voltage_empty", float, False),
-                ("provisional", bool, False), ("notes", str, True),
+                ("notes", str, True),
             ]
             rows = _coerce_records(event.new, schema, "Battery")
             values = [catalog.Battery(**{**row, "notes": self._optional_text(row, "notes")}) for row in rows]
@@ -1741,7 +1741,6 @@ class Workbench:
             schema = [
                 ("key", str, False), ("name", str, False), ("current_max", float, False),
                 ("mass", float, False), ("efficiency", float, False),
-                ("provisional", bool, False),
             ]
             values = [catalog.ESC(**row) for row in _coerce_records(event.new, schema, "ESC")]
             self.project.escs = {item.key: item for item in values}
@@ -1759,7 +1758,7 @@ class Workbench:
             schema = [
                 ("key", str, False), ("name", str, False), ("mass", float, False),
                 ("data", str, True), ("diameter", float, True), ("pitch", float, True),
-                ("notes", str, True),
+                ("rpm_max", float, True), ("notes", str, True),
             ]
             rows = _coerce_records(event.new, schema, "Propeller")
             old = self.project.propellers
@@ -3186,8 +3185,8 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
         )
         propulsion_library = pn.Column(
             pn.pane.Alert(
-                "Catalog entries are copied into this project and are fully editable. Replace provisional "
-                "motor resistance/no-load current and battery cell resistance with measured values here. "
+                "Catalog entries are copied into this project and are fully editable: motor values are "
+                "SunnySky datasheet figures and battery cell resistance is an estimate, so edit either here. "
                 "For a measured propeller, add its diameter and pitch in metres, then import or edit rows "
                 "with `rpm, J, CT, CP`; project points override the bundled dataset. All definitions are "
                 "saved inside the `.flightlab.json` project.",

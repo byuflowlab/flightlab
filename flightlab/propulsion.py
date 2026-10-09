@@ -12,9 +12,9 @@ solved without the rest of it, so :func:`operating_point` closes it numerically
 and everything else here is either an input to it or a consequence of it.
 
     >>> from flightlab import propulsion as prop
-    >>> op = prop.operating_point("M1000", "apce_10x7", "B3S1300", V=12.0)
+    >>> op = prop.operating_point("M1100", "apcsf_10x4.7", "B3S1000", V=12.0)
     >>> round(op.thrust, 3), round(op.rpm), round(op.efficiency_total, 4)
-    (8.703, 8178.0, 0.3689)
+    (11.832, 9940, 0.3838)
 
 Units
 -----
@@ -69,7 +69,7 @@ class PropellerModel:
     Parameters
     ----------
     name : str
-        A propeller in :func:`flightlab.props.available`, e.g. ``"apce_10x7"``.
+        A propeller in :func:`flightlab.props.available`, e.g. ``"apcsf_10x4.7"``.
     include_static : bool
         Splice the separately measured static run in at ``J = 0``.  Without it
         the model has no data below ``J ~ 0.09`` and static thrust -- the
@@ -206,8 +206,8 @@ class PropellerModel:
         self.n_range = (float(self._n[0]), float(self._n[-1]))
 
         # Every sweep was run to whatever advance ratio the tunnel could reach
-        # at that speed, so the fast sweeps stop early -- the 10x7's 6,531 rpm
-        # run ends at J = 0.44 while its 5,001 rpm run reaches 0.84.  Left
+        # at that speed, so the fast sweeps stop early -- the 10x4.7's 6,512 rpm
+        # run ends at J = 0.45 while its 4,997 rpm run reaches 0.78.  Left
         # alone, a lookup at high rpm and high J would clamp at the end of the
         # short curve and report a thrust that is far too high.
         #
@@ -462,8 +462,11 @@ def motor_point(spec, voltage: float, omega: float) -> MotorPoint:
         ``I = (V - omega/Kv) / R``
         ``Q = (I - I0) / Kv``
 
-    Both ``R`` and ``I0`` are exactly the two parameters hobby vendors do not
-    publish, which is why the course measures them on the thrust stand.
+    ``R`` and ``I0`` are the two parameters most hobby vendors do not publish.
+    SunnySky does, which is one reason the catalog uses its motors, and the
+    course still measures both on the thrust stand: a datasheet resistance is a
+    nominal figure for a hand-wound motor, and ``I0`` is quoted at one speed
+    when in reality it grows with speed.
     """
     m = motor(spec)
     kv = m.Kv_rpm * RPM_TO_RAD
@@ -488,9 +491,13 @@ def motor_peak_efficiency(spec, voltage: Optional[float] = None) -> Dict[str, fl
     The closed form is ``eta_max = (1 - sqrt(I0 R / V))^2``, which says
     something worth noticing: peak efficiency depends on the motor only through
     the product ``I0 * R``, and not on ``Kv`` at all.  A high-``Kv`` motor is
-    not inherently less efficient -- it is a different gear ratio, and the
-    catalog's four motors rank differently by ``Kv`` and by peak efficiency
-    precisely because of this.
+    not inherently less efficient -- it is a different gear ratio.  In this
+    catalog the middle-Kv motor has the best peak and the highest-Kv motor
+    the worst, and the three peaks sit within three points of each other.
+    What the winding really changes is the current at which the peak sits,
+    ``sqrt(I0 V / R)``: about 6 A for the KV1260, 12 A for the KV1100 and
+    16 A for the KV1400, so at a 3 A cruise the KV1400 is the least efficient
+    of the three and at 20 A it is the most efficient.
     """
     m = motor(spec)
     V = m.no_load_voltage if voltage is None else voltage
@@ -528,9 +535,9 @@ def battery_voltage(spec, current: float = 0.0, soc: float = 1.0) -> float:
     """Terminal voltage, V, at a given current draw and state of charge.
 
     Open-circuit voltage from the cell curve, minus ``I R`` through the pack's
-    internal resistance.  The sag is not a detail: a 3S 1300 mAh pack at 20 A
-    loses about a volt, which is nearly 9% of the pack voltage and therefore
-    nearly 9% of the propeller's speed.
+    internal resistance.  The sag is not a detail: a 3S 1000 mAh pack at 20 A
+    loses about 0.9 V, which is 7% of the pack voltage and therefore 7% of
+    the propeller's speed.
     """
     if not 0.0 <= soc <= 1.0:
         raise ValueError(f"soc must be between 0 and 1; got {soc!r}")
@@ -716,7 +723,10 @@ def operating_point(
         True airspeed, m/s.
     throttle : float
         Fraction of pack voltage the ESC passes, 0 to 1.  A real ESC modulates
-        by duty cycle, so this is a good model of one.
+        by duty cycle, so this is a good model of one: the motor sees
+        ``throttle`` times the pack voltage and the pack supplies ``throttle``
+        times the motor current, which is why the current a wattmeter reads at
+        the pack is below the motor current at part throttle.
     altitude : float
         Geometric altitude, m -- sets the density the propeller works against.
     soc : float
@@ -757,15 +767,14 @@ def operating_point(
     esc_obj = _resolve_esc(esc)
     eta_esc = esc_obj.efficiency
 
-    def residual(omega):
+    def terminal_voltage(omega):
         if supply_voltage is None:
-            # A single-chain call closes battery sag on its own motor current.
-            v_open = battery_voltage(b, 0.0, soc) * throttle
-            i = (v_open - omega / (m.Kv_rpm * RPM_TO_RAD)) / m.resistance
-            v = battery_voltage(b, max(i, 0.0), soc) * throttle
-        else:
-            v = float(supply_voltage) * throttle
-        mp = motor_point(m, v, omega)
+            # A single-chain call closes battery sag on its own current.
+            return _sagged_motor_voltage(m, b, omega, throttle, soc, eta_esc)
+        return float(supply_voltage) * throttle
+
+    def residual(omega):
+        mp = motor_point(m, terminal_voltage(omega), omega)
         return mp.torque * eta_esc - p.torque(V, omega, rho)
 
     lo, hi = omega_bracket
@@ -782,12 +791,7 @@ def operating_point(
         )
     omega = brentq(residual, lo, hi, xtol=1e-8, rtol=1e-12)
 
-    if supply_voltage is None:
-        v_open = battery_voltage(b, 0.0, soc) * throttle
-        i_est = (v_open - omega / (m.Kv_rpm * RPM_TO_RAD)) / m.resistance
-        v = battery_voltage(b, max(i_est, 0.0), soc) * throttle
-    else:
-        v = float(supply_voltage) * throttle
+    v = terminal_voltage(omega)
     mp = motor_point(m, v, omega)
 
     T = p.thrust(V, omega, rho)
@@ -818,6 +822,33 @@ def operating_point(
         extrapolated_reason=_coverage_note(p, J, omega),
         soc=float(soc),
     )
+
+
+def _sagged_motor_voltage(m, b, omega, throttle, soc, eta_esc) -> float:
+    """Motor terminal voltage with the pack sagging under its own current.
+
+    The ESC is a duty-cycle converter: the motor sees ``throttle`` times the
+    pack voltage, and the pack supplies the motor current times ``throttle``
+    (divided by the ESC efficiency).  With the pack voltage ``OCV - R_p I_p``
+    and the motor current ``(v - omega/Kv)/R_m``, that is one linear equation
+    in the motor current, solved here in closed form:
+
+        ``i = (t OCV - omega/Kv) / (R_m + t^2 R_p / eta_esc)``
+
+    An earlier version took one fixed-point step instead -- estimate the
+    current at the open-circuit voltage, then sag -- which overestimates the
+    current by the ratio of pack to motor resistance.  For a 43 mohm motor on
+    a 45 mohm pack that step predicts hundreds of amps and a negative
+    terminal voltage, and the torque balance has no root.
+    """
+    ocv = battery_voltage(b, 0.0, soc)
+    r_pack = b.cell_resistance * b.cells_series / max(b.cells_parallel, 1)
+    kv = m.Kv_rpm * RPM_TO_RAD
+    i = (throttle * ocv - omega / kv) / (
+        m.resistance + throttle**2 * r_pack / eta_esc
+    )
+    i_pack = max(throttle * i / eta_esc, 0.0)
+    return float(battery_voltage(b, i_pack, soc) * throttle)
 
 
 def _coverage_note(p: PropellerModel, J: float, omega: float) -> str:

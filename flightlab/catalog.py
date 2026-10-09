@@ -1,28 +1,30 @@
 """``flightlab.catalog`` -- the bounded propulsion catalog.
 
-Four motors, five propellers, three batteries.  Sixty combinations is a genuine
-finite search with a right answer, small enough to stock and to measure on the
-thrust stand, and the student orders the exact part they analyzed.
+Three motors, three propellers, two batteries, one ESC.  Eighteen combinations
+is a genuine finite search with a right answer, small enough to stock and to
+measure on the thrust stand, and the student orders the exact part they
+analyzed.
 
-.. warning::
+Where the numbers come from
+---------------------------
+Every entry is a real, orderable part.
 
-   **The motor and battery numbers here are provisional.**  Every propeller is
-   real, with a real measured UIUC data file behind it.  The motors and packs
-   are specified the way the fleet page specifies RC-1's -- generically ("the
-   generic 1000 Kv motor") -- with physically plausible parameters chosen so
-   the whole toolchain runs end to end.  They are **not** transcribed from a
-   vendor datasheet, and ``entry.provisional`` is ``True`` for all of them.
+* **Propellers** carry measured UIUC wind-tunnel data (static and
+  advance-ratio sweeps) and APC's published mass.
+* **Motors** are SunnySky X-series outrunners, chosen because SunnySky, unlike
+  most vendors in this price tier, publishes winding resistance, no-load
+  current, and static thrust tables for each winding.  ``Kv``,
+  ``resistance``, ``current_no_load``, ``current_max`` and ``mass`` are
+  transcribed from those datasheets.  Compared at the same pack current, the
+  model reproduces SunnySky's published static tables for the X2208 and
+  X2212 windings to within about ten per cent in thrust and rpm.
+* **Batteries** are generic hobby packs.  Capacity and cell count are the
+  nameplate; mass and C rating are typical vendor figures for the class;
+  ``cell_resistance`` is an estimate, because no pack vendor publishes it.
 
-   Replace two groups of values when course measurements are available:
-
-   1. ``Kv``, ``mass`` and ``current_max`` from the datasheet of the part
-      actually stocked;
-   2. ``resistance`` and ``current_no_load`` from the **TA thrust-stand
-      measurement**.  Vendors in this price tier do not publish winding
-      resistance or no-load current, and estimates are the least trustworthy
-      numbers in any catalog, which is why they should be measured.
-
-   :func:`check_provisional` returns what still needs replacing.
+If you ever measure a motor or pack yourself, :meth:`Motor.with_measurements`
+and :meth:`Battery.with_measurements` return a copy with your numbers in
+place of the datasheet's.
 
 Units
 -----
@@ -40,22 +42,21 @@ Examples
 
     from flightlab import catalog
 
-    catalog.MOTORS["M1000"].Kv        # rad/s/V, for the torque constant
-    catalog.MOTORS["M1000"].Kv_rpm    # RPM/V, as the vendor quotes it
-    catalog.BATTERIES["B3S1300"].energy_nominal / 3600   # W*h
+    catalog.MOTORS["M1260"].Kv        # rad/s/V, for the torque constant
+    catalog.MOTORS["M1260"].Kv_rpm    # RPM/V, as the vendor quotes it
+    catalog.BATTERIES["B3S1000"].energy_nominal / 3600   # W*h
 
-    motor = catalog.MOTORS["M1000"].with_measurements(
-        resistance=0.095, current_no_load=0.82, no_load_voltage=11.1
+    motor = catalog.MOTORS["M1260"].with_measurements(
+        resistance=0.130, current_no_load=0.45, no_load_voltage=11.1
     )
-    battery = catalog.BATTERIES["B3S1300"].with_measurements(
-        cell_resistance=0.010
+    battery = catalog.BATTERIES["B3S1000"].with_measurements(
+        cell_resistance=0.014
     )
 
     for m, p, b in catalog.combinations():
-        ...                            # 4 * 5 * 3 = 60
-
-    catalog.check_provisional()        # what still needs real data
+        ...                            # 3 * 3 * 2 = 18
 """
+
 
 from __future__ import annotations
 
@@ -75,7 +76,6 @@ __all__ = [
     "PROPELLERS",
     "ESCS",
     "combinations",
-    "check_provisional",
     "RC1_BASELINE",
 ]
 
@@ -92,9 +92,10 @@ class Motor:
     Kv_rpm : float
         Speed constant as the vendor quotes it, **RPM/V** (no-load).
     resistance : float
-        Winding resistance, ohms.  Measured, not published.
+        Winding resistance, ohms.  Datasheet value until measured.
     current_no_load : float
-        No-load current ``I0``, amperes, at ``no_load_voltage``.  Measured.
+        No-load current ``I0``, amperes, at ``no_load_voltage``.  Datasheet
+        value until measured.
     no_load_voltage : float
         Voltage at which ``I0`` was measured, V.
     current_max : float
@@ -103,8 +104,6 @@ class Motor:
         Mass in kg, motor only, without prop adapter.
     cells_min, cells_max : int
         Recommended LiPo cell count.
-    provisional : bool
-        True while the electrical parameters are placeholders.
     notes : str
     """
 
@@ -118,7 +117,6 @@ class Motor:
     no_load_voltage: float = 11.1
     cells_min: int = 2
     cells_max: int = 3
-    provisional: bool = True
     notes: str = ""
 
     def __post_init__(self) -> None:
@@ -148,9 +146,8 @@ class Motor:
 
         The catalog object is immutable and remains unchanged. ``resistance``
         is winding resistance in ohms; ``current_no_load`` is amperes measured
-        at ``no_load_voltage``. The returned component is marked as no longer
-        provisional and can be passed directly to :func:`operating_point
-        <flightlab.propulsion.operating_point>`.
+        at ``no_load_voltage``. The returned component can be passed directly
+        to :func:`operating_point <flightlab.propulsion.operating_point>`.
         """
         voltage = self.no_load_voltage if no_load_voltage is None else no_load_voltage
         measurement_notes = notes or (
@@ -161,7 +158,6 @@ class Motor:
             resistance=resistance,
             current_no_load=current_no_load,
             no_load_voltage=voltage,
-            provisional=False,
             notes=measurement_notes,
         )
 
@@ -199,8 +195,11 @@ class Motor:
         Notes
         -----
         The important result is that peak efficiency depends on ``I0``, ``R`` and ``V``,
-        and **not on Kv at all**.  Ranking these four motors by ``Kv`` and by
-        peak efficiency gives two different orders.
+        and **not on Kv at all**: the middle-Kv motor has the best peak and
+        the highest-Kv motor the worst.  The peaks sit within three points of
+        each other; what really separates the motors is the current at which
+        the peak sits (:meth:`current_at_peak_efficiency`), which is 6 A for
+        the KV1260, 12 A for the KV1100 and 16 A for the KV1400.
         """
         v = np.asarray(voltage, dtype=float)
         return (1.0 - np.sqrt(self.current_no_load * self.resistance / v)) ** 2
@@ -230,7 +229,6 @@ class Battery:
         Internal resistance of one cell, ohms.
     cell_voltage_nominal, cell_voltage_full, cell_voltage_empty : float
         Volts per cell.
-    provisional : bool
     notes : str
     """
 
@@ -245,7 +243,6 @@ class Battery:
     cell_voltage_nominal: float = 3.7
     cell_voltage_full: float = 4.2
     cell_voltage_empty: float = 3.0
-    provisional: bool = True
     notes: str = ""
 
     def __post_init__(self) -> None:
@@ -287,7 +284,6 @@ class Battery:
         return replace(
             self,
             cell_resistance=cell_resistance,
-            provisional=False,
             notes=measurement_notes,
         )
 
@@ -343,14 +339,18 @@ class PropellerEntry:
     Attributes
     ----------
     key : str
-        Catalog key, e.g. ``"P10x7"``.
+        Catalog key, e.g. ``"P10x4.7"``.
     data : str
-        Key for :func:`flightlab.props.load`, e.g. ``"apce_10x7"``.
+        Key for :func:`flightlab.props.load`, e.g. ``"apcsf_10x4.7"``.
     name : str
     mass : float
-        Mass in kg, including the hub but not the adapter.
-    provisional : bool
-        The performance data is measured; only ``mass`` is a placeholder.
+        Mass in kg, including the hub but not the adapter, as APC publishes it.
+    rpm_max : float, optional
+        The manufacturer's maximum rotational speed, rev/min.  APC rates its
+        thin electric line to ``190,000 / D`` and its slow flyer line to
+        ``65,000 / D`` with ``D`` in inches; the thin, flexible slow flyer
+        blades flutter and shed past that.  The analysis warns when an
+        operating point exceeds it.
     notes : str
     """
 
@@ -358,7 +358,7 @@ class PropellerEntry:
     data: str
     name: str
     mass: float
-    provisional: bool = False
+    rpm_max: Optional[float] = None
     notes: str = ""
 
     def load(self):
@@ -382,7 +382,6 @@ class ESC:
     efficiency : float
         Assumed constant efficiency. Real ESC losses are not constant, so name
         that simplification when reconciling the model with measurements.
-    provisional : bool
     """
 
     key: str
@@ -390,79 +389,73 @@ class ESC:
     current_max: float
     mass: float
     efficiency: float = 0.95
-    provisional: bool = True
 
 
 # --- the catalog ------------------------------------------------------------
 
 _MOTOR_NOTE = (
-    "Kv, mass and current_max are the vendor's published figures for a real, "
-    "orderable part and should be confirmed against the listing at order time. "
-    "resistance and current_no_load are ESTIMATES -- vendors in this tier do "
-    "not publish them -- and must be replaced by the TA thrust-stand "
-    "measurement when measured course data are available."
+    "Kv, resistance, no-load current, current_max and mass are SunnySky's "
+    "published datasheet figures for this winding (no-load current quoted at "
+    "10 V); confirm them against the listing at order time."
 )
 
 MOTORS: Dict[str, Motor] = {
     m.key: m
     for m in (
         Motor(
-            key="M820",
-            name="EMAX XA2212-820, 820 Kv",
-            Kv_rpm=820.0,
-            resistance=0.200,
-            current_no_load=0.60,
-            current_max=16.0,
-            mass=0.057,
-            no_load_voltage=11.1,
+            key="M1100",
+            name="SunnySky X2216 II KV1100",
+            Kv_rpm=1100.0,
+            resistance=0.073,
+            current_no_load=0.90,
+            current_max=24.0,
+            mass=0.072,
+            no_load_voltage=10.0,
             cells_min=2,
-            cells_max=3,
-            notes=_MOTOR_NOTE + " Lowest Kv here: turns a large propeller "
-            "slowly, which is the efficient way to make thrust at low speed.",
+            cells_max=4,
+            notes=_MOTOR_NOTE + " Lowest Kv in the catalog on the larger "
+            "22 x 16 mm stator: it turns the big slow-flyer propellers at a "
+            "speed the data covers and carries 24 A doing it. 26 g heavier "
+            "than the X2208, which on a 400 g airplane is not nothing. "
+            "SunnySky recommends a 30 A ESC and the APC 9x4.7, 9x4.5, 9x6, "
+            "8x6 and 10x4.7.",
         ),
         Motor(
-            key="M1000",
-            name="generic A2212-13T, 1000 Kv",
-            Kv_rpm=1000.0,
-            resistance=0.100,
-            current_no_load=0.85,
-            current_max=13.0,
-            mass=0.050,
-            no_load_voltage=11.1,
+            key="M1260",
+            name="SunnySky X2208 KV1260",
+            Kv_rpm=1260.0,
+            resistance=0.122,
+            current_no_load=0.40,
+            current_max=15.0,
+            mass=0.046,
+            no_load_voltage=10.0,
             cells_min=2,
-            cells_max=3,
-            notes=_MOTOR_NOTE + " The cheapest and most widely stocked motor "
-            "of this class, and RC-1's baseline. Note the low current limit.",
-        ),
-        Motor(
-            key="M1250",
-            name="SunnySky X2216-11, 1250 Kv",
-            Kv_rpm=1250.0,
-            resistance=0.060,
-            current_no_load=1.10,
-            current_max=26.0,
-            mass=0.068,
-            no_load_voltage=11.1,
-            cells_min=2,
-            cells_max=3,
-            notes=_MOTOR_NOTE + " Highest peak efficiency in the catalog, and "
-            "18 g heavier than the lightest. Whether that is worth it depends "
-            "on the mission, which is the point.",
+            cells_max=4,
+            notes=_MOTOR_NOTE + " The small 22 x 8 mm stator: lightest and "
+            "cheapest motor here, the best peak efficiency of the three, and a "
+            "peak that lands at only 6 A -- the right motor for a light, slow "
+            "airplane, and RC-1's. SunnySky's static table gives 780 gf at "
+            "13.9 A on an APC 9x4.7 SF and 570 gf at 11.7 A on a 10x4.7 SF, "
+            "both at 11.1 V, and recommends an 18 A ESC.",
         ),
         Motor(
             key="M1400",
-            name="generic A2212-10T, 1400 Kv",
+            name="SunnySky X2216 II KV1400",
             Kv_rpm=1400.0,
-            resistance=0.085,
-            current_no_load=1.45,
-            current_max=15.0,
-            mass=0.050,
-            no_load_voltage=11.1,
+            resistance=0.055,
+            current_no_load=1.30,
+            current_max=33.0,
+            mass=0.072,
+            no_load_voltage=10.0,
             cells_min=2,
-            cells_max=3,
-            notes=_MOTOR_NOTE + " Highest Kv and the WORST peak efficiency, "
-            "because peak efficiency ranks with I0*R/V and this motor's "
-            "no-load current is high. Students expect the opposite.",
+            cells_max=4,
+            notes=_MOTOR_NOTE + " Same can as the KV1100 with fewer turns of "
+            "thicker wire: lower resistance, a no-load current of 1.3 A, and "
+            "the WORST peak efficiency of the three despite the highest Kv, "
+            "because peak efficiency ranks with I0*R. It needs about 16 A to "
+            "reach that peak; on a small propeller at 3 A it is the least "
+            "efficient motor here by a wide margin. SunnySky recommends a 40 A "
+            "ESC and the APC 9x4.7, 9x4.5, 9x6, 8x6 and 7x6.",
         ),
     )
 }
@@ -472,46 +465,37 @@ BATTERIES: Dict[str, Battery] = {
     b.key: b
     for b in (
         Battery(
-            key="B2S1300",
-            name="2S 7.4 V 1300 mAh 45C LiPo",
+            key="B2S1500",
+            name="Turnigy 2S 7.4 V 1500 mAh 40C LiPo",
             cells_series=2,
             cells_parallel=1,
-            capacity_ah=1.300,
-            mass=0.075,
-            c_rating=45.0,
+            capacity_ah=1.500,
+            mass=0.085,
+            c_rating=40.0,
             cell_resistance=0.010,
             notes=(
-                "Widely stocked hobby pack. Mass is the vendor figure; "
-                "cell_resistance is an ESTIMATE to be measured."
+                "Turnigy 1500 mAh 2S 40C with XT60; capacity, C rating and "
+                "the 85 g mass are HobbyKing's listing, cell_resistance is an "
+                "estimate (no pack vendor publishes it). Nearly the same mass "
+                "and stored energy as B3S1000, delivered at two thirds the "
+                "voltage: the same motor and propeller turn about a third "
+                "slower on it."
             ),
         ),
         Battery(
-            key="B3S2200",
-            name="3S 11.1 V 2200 mAh 50C LiPo",
+            key="B3S1000",
+            name="Turnigy 3S 11.1 V 1000 mAh 40C LiPo",
             cells_series=3,
             cells_parallel=1,
-            capacity_ah=2.200,
-            mass=0.185,
-            c_rating=50.0,
-            cell_resistance=0.008,
+            capacity_ah=1.000,
+            mass=0.090,
+            c_rating=40.0,
+            cell_resistance=0.013,
             notes=(
-                "70 g heavier than B3S1300 for 69% more energy. Whether that "
-                "is a good trade is the endurance-versus-mass question, and it "
-                "depends on the mission. cell_resistance is an ESTIMATE."
-            ),
-        ),
-        Battery(
-            key="B3S1300",
-            name="3S 11.1 V 1300 mAh 45C LiPo",
-            cells_series=3,
-            cells_parallel=1,
-            capacity_ah=1.300,
-            mass=0.115,
-            c_rating=45.0,
-            cell_resistance=0.012,
-            notes=(
-                "RC-1's baseline pack; its 115 g matches the battery row of "
-                "the RC-1 component mass table. cell_resistance is an ESTIMATE."
+                "Turnigy 1000 mAh 3S 40C with XT60; capacity and C rating are "
+                "HobbyKing's listing, the mass is typical for the pack (the "
+                "listings disagree between 88 and 105 g: weigh one), and "
+                "cell_resistance is an estimate. RC-1's baseline pack."
             ),
         ),
     )
@@ -525,42 +509,41 @@ PROPELLERS: Dict[str, PropellerEntry] = {
             key="P8x6",
             data="apce_8x6",
             name="APC 8x6E",
-            mass=0.010,
-            notes="performance measured; mass is a placeholder",
-        ),
-        PropellerEntry(
-            key="P9x6",
-            data="apce_9x6",
-            name="APC 9x6E",
-            mass=0.012,
-            notes="performance measured; mass is a placeholder",
-        ),
-        PropellerEntry(
-            key="P10x5",
-            data="apce_10x5",
-            name="APC 10x5E",
-            mass=0.014,
+            mass=0.0139,
+            rpm_max=190_000.0 / 8.0,
             notes=(
-                "performance measured; mass is a placeholder. Same diameter as "
-                "P10x7 and less pitch, making it a controlled pitch comparison."
+                "APC thin electric; UIUC measured performance, APC published "
+                "mass (0.49 oz). The only fast propeller here: p/D = 0.75 puts "
+                "its efficiency peak near J = 0.6, and it is the one the KV1400 "
+                "motor is sized for."
             ),
         ),
         PropellerEntry(
-            key="P10x7",
-            data="apce_10x7",
-            name="APC 10x7E",
-            mass=0.014,
+            key="P9x4.7",
+            data="apcsf_9x4.7",
+            name="APC 9x4.7SF",
+            mass=0.0091,
+            rpm_max=65_000.0 / 9.0,
             notes=(
-                "performance measured; mass is a placeholder. RC-1's baseline "
-                "propeller, and the one on the thrust stand."
+                "APC slow flyer; UIUC measured performance, APC published "
+                "mass (0.32 oz). Thin, flexible blades meant for low rpm: APC "
+                "rates the SF line to 65,000/D rpm, 7,200 rpm for this one, "
+                "and the analysis warns when a motor spins it past that."
             ),
         ),
         PropellerEntry(
-            key="P11x7",
-            data="apce_11x7",
-            name="APC 11x7E",
-            mass=0.017,
-            notes="performance measured; mass is a placeholder",
+            key="P10x4.7",
+            data="apcsf_10x4.7",
+            name="APC 10x4.7SF",
+            mass=0.0119,
+            rpm_max=65_000.0 / 10.0,
+            notes=(
+                "APC slow flyer; UIUC measured performance, APC published "
+                "mass (0.42 oz). Largest disk in the catalog, which is the "
+                "efficient way to make static thrust, at the cost of the "
+                "highest torque demand. Same pitch as P9x4.7, so the pair is "
+                "a controlled diameter comparison. SF rpm limit 6,500."
+            ),
         ),
     )
 }
@@ -568,27 +551,26 @@ PROPELLERS: Dict[str, PropellerEntry] = {
 ESCS: Dict[str, ESC] = {
     e.key: e
     for e in (
-        ESC(key="ESC30", name="30 A brushless ESC with 5 V BEC",
-            current_max=30.0, mass=0.025, efficiency=0.95),
-        ESC(key="ESC40", name="40 A brushless ESC with 5 V BEC",
-            current_max=40.0, mass=0.038, efficiency=0.96),
+        ESC(key="ESC40", name="SunnySky X-series 40 A airplane ESC, 4 A BEC",
+            current_max=40.0, mass=0.040, efficiency=0.96),
     )
 }
 
 #: RC-1's baseline combination, as named on the fleet page.
 #:
 #: **It is deliberately a poor match, and analyzing it is how students find
-#: that out.** A 1000 Kv motor on a 3S pack spins the 10x7 to about 7,700 rpm;
-#: the fastest sweep UIUC measured for that propeller is 6,531 rpm, so every
-#: thrust number for this combination rests on a clamped lookup. It also draws
-#: well past the airframe's power allowance and past the motor's own current
-#: limit. Every one of those is visible from the tools, and fixing it is the
-#: design section of the propulsion week.
-RC1_BASELINE = ("M1000", "P10x7", "B3S1300")
+#: that out.** The cheapest motor, the biggest propeller, and the 3S pack
+#: "because 3S has more power" is how a beginner chooses. At full throttle the
+#: torque balance sits near 9,000 rpm, past APC's 6,500 rpm rating for the
+#: slow-flyer blade, and pulls about 30 A through a motor rated for 15 A.
+#: Both are visible from the tools, and fixing it -- a smaller propeller, the
+#: 2S pack, or a throttle limit -- is the design section of the propulsion
+#: week.
+RC1_BASELINE = ("M1260", "P10x4.7", "B3S1000")
 
 
 def combinations() -> Iterator[Tuple[Motor, PropellerEntry, Battery]]:
-    """Iterate over all 60 motor-propeller-battery combinations.
+    """Iterate over all 18 motor-propeller-battery combinations.
 
     Yields
     ------
@@ -597,32 +579,9 @@ def combinations() -> Iterator[Tuple[Motor, PropellerEntry, Battery]]:
     Examples
     --------
     >>> len(list(combinations()))
-    60
+    18
     """
     for m, p, b in itertools.product(
         MOTORS.values(), PROPELLERS.values(), BATTERIES.values()
     ):
         yield m, p, b
-
-
-def check_provisional() -> Dict[str, List[str]]:
-    """Report which catalog entries still hold placeholder data.
-
-    Returns
-    -------
-    dict
-        Maps ``"motors"``, ``"batteries"``, ``"propellers"``, ``"escs"`` to the
-        list of keys whose ``provisional`` flag is still set.  An empty list
-        means that group has been replaced with real data.
-
-    Examples
-    --------
-    >>> sorted(check_provisional()["motors"])
-    ['M1000', 'M1200', 'M1400', 'M850']
-    """
-    return {
-        "motors": [k for k, v in MOTORS.items() if v.provisional],
-        "batteries": [k for k, v in BATTERIES.items() if v.provisional],
-        "propellers": [k for k, v in PROPELLERS.items() if v.provisional],
-        "escs": [k for k, v in ESCS.items() if v.provisional],
-    }

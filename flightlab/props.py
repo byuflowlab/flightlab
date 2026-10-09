@@ -37,8 +37,8 @@ Examples
 
     from flightlab import props
 
-    props.available()                  # -> ['apce_10x5', 'apce_10x7', ...]
-    p = props.load("apce_10x7")        # RC-1's propeller
+    props.available()                  # -> ['apce_8x6', 'apcsf_10x4.7', 'apcsf_9x4.7']
+    p = props.load("apcsf_10x4.7")     # RC-1's propeller
     p.diameter                         # 0.254 m
     for run in p.runs:
         run.rpm, run.J, run.CT, run.CP, run.eta
@@ -79,7 +79,7 @@ INCH = 0.0254
 #: Manufacturer prefixes appearing in UIUC filenames.
 FAMILIES = {
     "apce": "APC Electric",
-    "apcsf": "APC Sport",
+    "apcsf": "APC Slow Flyer",
     "apcsp": "APC Sport (pusher)",
     "apccf": "APC Competition",
     "apcff": "APC Free Flight",
@@ -217,7 +217,7 @@ class Propeller:
     Attributes
     ----------
     name : str
-        The UIUC key, e.g. ``"apce_10x7"``.
+        The UIUC key, e.g. ``"apcsf_10x4.7"``.
     family : str
         Manufacturer prefix, e.g. ``"apce"``.
     manufacturer : str
@@ -379,7 +379,7 @@ def load(name: str) -> Propeller:
     Parameters
     ----------
     name : str
-        UIUC key such as ``"apce_10x7"``.  Case and surrounding whitespace are
+        UIUC key such as ``"apcsf_10x4.7"``.  Case and surrounding whitespace are
         ignored.
 
     Returns

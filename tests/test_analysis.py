@@ -461,33 +461,47 @@ def test_a_fin_is_never_mirrored_onto_itself():
 # --- propulsion -------------------------------------------------------------
 
 
-def test_motor_peak_efficiency_ranks_by_I0R_and_not_by_Kv():
-    """HW 5's central finding, asserted."""
+def test_motor_peak_efficiency_ranks_by_I0R_and_the_load_decides_the_winner():
+    """HW 5's central finding, asserted.
+
+    Peak efficiency ranks with I0*R/V and not with Kv, and for these three
+    windings the peaks are nearly equal.  What separates the motors is where
+    the peak sits: at a 3 A cruise the KV1400 is the least efficient motor in
+    the box, and at 20 A it is the most efficient.  No rule of thumb about Kv
+    reproduces that; the operating point does.
+    """
     from flightlab import catalog
 
+    V = 11.1
     rows = [
-        (k, catalog.MOTORS[k].Kv_rpm, propulsion.motor_peak_efficiency(k, 11.1))
+        (k, catalog.MOTORS[k].Kv_rpm, propulsion.motor_peak_efficiency(k, V))
         for k in catalog.MOTORS
     ]
-    by_kv = [k for k, _, _ in sorted(rows, key=lambda r: r[1])]
     by_eta = [k for k, _, _ in sorted(rows, key=lambda r: r[2]["efficiency"])]
     by_i0r = [k for k, _, _ in sorted(rows, key=lambda r: -r[2]["I0R_over_V"])]
-    assert by_kv != by_eta, "the catalog must not let Kv stand in for efficiency"
     assert by_eta == by_i0r, "peak efficiency ranks with I0*R/V, exactly"
-    # and the best motor must not be the one at either end of the Kv range,
-    # so that no simple rule of thumb reproduces the answer
-    assert by_eta[-1] not in (by_kv[0], by_kv[-1])
+
+    def efficiency_at(key, current):
+        m = catalog.MOTORS[key]
+        omega = m.Kv * (V - current * m.resistance)
+        return propulsion.motor_point(key, V, omega).efficiency
+
+    cruise = {k: efficiency_at(k, 3.0) for k in catalog.MOTORS}
+    climb = {k: efficiency_at(k, 20.0) for k in catalog.MOTORS}
+    assert min(cruise, key=cruise.get) == "M1400"
+    assert max(climb, key=climb.get) == "M1400"
+    assert max(cruise, key=cruise.get) == "M1260"
 
 
 def test_kv_conversion_is_radians_not_rpm():
-    assert propulsion.Kv_rad("M1000") == pytest.approx(1000.0 * 2 * np.pi / 60.0)
+    assert propulsion.Kv_rad("M1100") == pytest.approx(1100.0 * 2 * np.pi / 60.0)
 
 
 def test_propeller_thrust_falls_with_airspeed():
     """It did not, once: the static run was being treated as its own set of
     rotational speeds, which built single-point curves that interpolate to a
     constant and made thrust independent of airspeed."""
-    p = propulsion.propeller_model("apce_10x7")
+    p = propulsion.propeller_model("apcsf_10x4.7")
     omega = 5000.0 * propulsion.RPM_TO_RAD
     T = [p.thrust(V, omega) for V in (0.0, 4.0, 8.0, 12.0)]
     assert all(a > b for a, b in zip(T, T[1:]))
@@ -495,7 +509,7 @@ def test_propeller_thrust_falls_with_airspeed():
 
 
 def test_propeller_efficiency_identity_holds():
-    p = propulsion.propeller_model("apce_10x7")
+    p = propulsion.propeller_model("apcsf_10x4.7")
     for J in (0.2, 0.4, 0.6):
         n = 100.0
         assert float(p.efficiency(J, n)) == pytest.approx(
@@ -504,8 +518,8 @@ def test_propeller_efficiency_identity_holds():
 
 
 def test_the_torque_match_balances():
-    op = propulsion.operating_point("M1000", "apce_10x7", "B3S1300", V=12.0)
-    p = propulsion.propeller_model("apce_10x7")
+    op = propulsion.operating_point("M1100", "apcsf_10x4.7", "B3S1000", V=12.0)
+    p = propulsion.propeller_model("apcsf_10x4.7")
     assert op.torque == pytest.approx(p.torque(12.0, op.omega, 1.225), rel=1e-6)
     assert 0.0 < op.efficiency_total < 1.0
 
@@ -515,17 +529,19 @@ def test_rc1_baseline_overloads_its_own_motor():
 
     The propeller data covers the operating point perfectly well -- the advance
     ratio is mid-range -- so the analysis is trustworthy, and what it says is
-    that a 1000 Kv motor on 3S pulls about 24 A through a part rated for 13 A.
-    That is a better lesson than a data-coverage complaint: the tool is inside
-    its range and the aircraft is outside its own.
+    that the 1260 Kv motor on 3S pulls about 30 A through a part rated for
+    15 A while spinning a slow-flyer blade past its 6,500 rpm rating.  That is
+    a better lesson than a data-coverage complaint: the tool is inside its
+    range and the aircraft is outside its own.
     """
     from flightlab import catalog
 
-    op = propulsion.operating_point("M1000", "apce_10x7", "B3S1300", V=11.0,
+    op = propulsion.operating_point("M1260", "apcsf_10x4.7", "B3S1000", V=11.0,
                                     altitude=1400.0)
     assert not op.extrapolated, "the advance ratio is well inside the data"
     assert op.reynolds_ratio < 2.0, "and the speed excursion is modest"
-    assert op.current > catalog.MOTORS["M1000"].current_max
+    assert op.current > catalog.MOTORS["M1260"].current_max
+    assert op.rpm > 6500.0
 
 
 def test_advance_ratio_is_the_coverage_limit_and_rpm_is_not():
@@ -535,7 +551,7 @@ def test_advance_ratio_is_the_coverage_limit_and_rpm_is_not():
     rotational speed is well above any sweep, and the reported Reynolds ratio
     says how far outside that speed sits without calling it an extrapolation.
     """
-    m = propulsion.propeller_model("apce_10x7")
+    m = propulsion.propeller_model("apcsf_10x4.7")
     assert not bool(m.out_of_range(0.5))
     assert bool(m.out_of_range(1.2))
     assert float(m.reynolds_ratio(150.0)) > 1.0
@@ -545,17 +561,17 @@ def test_advance_ratio_is_the_coverage_limit_and_rpm_is_not():
 def test_short_sweeps_are_extended_from_wider_ones_not_clamped():
     """Each speed was run only as far as the tunnel could reach.
 
-    The 10x7's 6,531 rpm sweep stops at J = 0.44 while its 5,001 rpm sweep
-    reaches 0.84.  Clamping at the end of the short curve reports a thrust far
+    The 10x4.7's 6,512 rpm sweep stops at J = 0.45 while its 4,997 rpm sweep
+    reaches 0.78.  Clamping at the end of the short curve reports a thrust far
     too high at speed; borrowing the wider curve's shape does not.  The
     coefficients at a common J must agree across speeds to within the Reynolds
     drift, which for these propellers is about ten per cent.
     """
-    m = propulsion.propeller_model("apce_10x7")
+    m = propulsion.propeller_model("apcsf_10x4.7")
     speeds = sorted(m._table)
     for n in speeds:
         assert m._table[n][0][-1] == pytest.approx(m._J_max)
-    values = [float(m.CT(0.6, n)) for n in speeds]
+    values = [float(m.CT(0.4, n)) for n in speeds]
     assert max(values) / min(values) < 1.25
     # and thrust must keep falling with speed right through the borrowed region
     T = [m.thrust(V, 8000.0 * propulsion.RPM_TO_RAD) for V in (12, 16, 20, 24)]
@@ -563,8 +579,8 @@ def test_short_sweeps_are_extended_from_wider_ones_not_clamped():
 
 
 def test_battery_voltage_sags_under_load():
-    full = propulsion.battery_voltage("B3S1300", current=0.0)
-    loaded = propulsion.battery_voltage("B3S1300", current=20.0)
+    full = propulsion.battery_voltage("B3S1000", current=0.0)
+    loaded = propulsion.battery_voltage("B3S1000", current=20.0)
     assert loaded < full
     assert (full - loaded) / full > 0.05
 
@@ -762,11 +778,11 @@ def test_every_new_plot_renders():
     V = np.linspace(8.0, 18.0, 20)
     d = performance.drag_curve(pol, 0.75, V)
     T = propulsion.thrust_available(
-        "M1000", "apce_10x7", "B3S1300", V, altitude=1400.0
+        "M1100", "apcsf_10x4.7", "B3S1000", V, altitude=1400.0
     )
     sl = loads.span_load(ASW27, mass=525.0, n=5.3, V=60.0, ns=30)
     lon, lat = stability.modes(RC1, V=12.0, altitude=1400.0)
-    op = propulsion.operating_point("M1000", "apce_10x7", "B3S1300", V=12.0)
+    op = propulsion.operating_point("M1100", "apcsf_10x4.7", "B3S1000", V=12.0)
 
     fig, ax = plt.subplots()
     plot.stall_margin(sol, tbl, ax=ax)

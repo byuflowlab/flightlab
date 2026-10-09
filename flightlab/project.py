@@ -300,9 +300,9 @@ class PropulsorSetup:
     """One motor–ESC–propeller unit and its thrust application point."""
 
     name: str = "Propulsor 1"
-    motor: str = "M1000"
-    propeller: str = "P10x7"
-    esc: str = "ESC30"
+    motor: str = "M1260"
+    propeller: str = "P10x4.7"
+    esc: str = "ESC40"
     throttle: float = 1.0
     x: float = -0.08
     y: float = 0.0
@@ -315,7 +315,7 @@ class PropulsorSetup:
 class PropulsionSetup:
     """A shared battery bus feeding one or more positioned propulsors."""
 
-    battery: str = "B3S1300"
+    battery: str = "B3S1000"
     state_of_charge: float = 0.9
     battery_x: float = 0.02
     battery_y: float = 0.0
@@ -370,6 +370,7 @@ class PropellerDefinition:
     data: str = ""
     diameter: Optional[float] = None
     pitch: Optional[float] = None
+    rpm_max: Optional[float] = None
     points: List[PropellerPoint] = field(default_factory=list)
     notes: str = ""
 
@@ -388,6 +389,11 @@ class PropellerDefinition:
         return propeller_model(self.data)
 
 
+def _component_fields(value: dict) -> dict:
+    """Saved component rows, minus the ``provisional`` flag of files saved before October 2026."""
+    return {key: item for key, item in value.items() if key != "provisional"}
+
+
 def _starter_motors() -> Dict[str, catalog.Motor]:
     return dict(catalog.MOTORS)
 
@@ -404,7 +410,7 @@ def _starter_propellers() -> Dict[str, PropellerDefinition]:
     return {
         key: PropellerDefinition(
             key=entry.key, name=entry.name, mass=entry.mass, data=entry.data,
-            notes=entry.notes,
+            rpm_max=entry.rpm_max, notes=entry.notes,
         )
         for key, entry in catalog.PROPELLERS.items()
     }
@@ -984,7 +990,7 @@ class AircraftProject:
 
     @classmethod
     def _from_current_format(cls, data: dict) -> "AircraftProject":
-        return cls(
+        project = cls(
             name=data["name"],
             surfaces=[
                 # Files saved before September 2026 carry an "orientation"
@@ -1016,9 +1022,9 @@ class AircraftProject:
                 if data.get("propulsion") is not None else None
             ),
             structure=StructuralSetup(**data.get("structure", {})),
-            motors={key: catalog.Motor(**value) for key, value in data.get("motors", {}).items()},
-            batteries={key: catalog.Battery(**value) for key, value in data.get("batteries", {}).items()},
-            escs={key: catalog.ESC(**value) for key, value in data.get("escs", {}).items()},
+            motors={key: catalog.Motor(**_component_fields(value)) for key, value in data.get("motors", {}).items()},
+            batteries={key: catalog.Battery(**_component_fields(value)) for key, value in data.get("batteries", {}).items()},
+            escs={key: catalog.ESC(**_component_fields(value)) for key, value in data.get("escs", {}).items()},
             propellers={
                 key: PropellerDefinition(
                     **{**value, "points": [PropellerPoint(**point) for point in value.get("points", [])]}
@@ -1028,6 +1034,41 @@ class AircraftProject:
             notes=data.get("notes", ""),
             format_version=data.get("format_version", FORMAT_VERSION),
         )
+        # Files saved before October 2026 carry a copy of the first course
+        # catalog, whose motors were placeholders and whose propellers point
+        # at UIUC data that no longer ships. The "provisional" flag those
+        # files carry identifies them; their library is replaced with the
+        # parts the course actually stocks.
+        if any("provisional" in value for value in data.get("motors", {}).values()):
+            project._refresh_component_library()
+        return project
+
+    def _refresh_component_library(self) -> None:
+        """Replace a pre-catalog component library with the current starters.
+
+        Propellers with project-owned measured points are kept, since those
+        are the student's data. Propulsor and battery selections that no
+        longer resolve fall back to the starter defaults at their saved
+        positions.
+        """
+        measured = {key: item for key, item in self.propellers.items() if item.points}
+        self.motors = _starter_motors()
+        self.batteries = _starter_batteries()
+        self.escs = _starter_escs()
+        self.propellers = {**_starter_propellers(), **measured}
+        setup = self.propulsion
+        if setup is None:
+            return
+        if setup.battery not in self.batteries:
+            setup.battery = PropulsionSetup().battery
+        default = PropulsorSetup()
+        for propulsor in setup.propulsors:
+            if propulsor.motor not in self.motors:
+                propulsor.motor = default.motor
+            if propulsor.propeller not in self.propellers:
+                propulsor.propeller = default.propeller
+            if propulsor.esc not in self.escs:
+                propulsor.esc = default.esc
 
     @classmethod
     def from_json(cls, text: str) -> "AircraftProject":
@@ -1070,7 +1111,7 @@ def blank_project() -> AircraftProject:
             ),
             # In the nose, ahead of the wing: this puts the starter's centre of
             # gravity about ten per cent of the chord ahead of its neutral point.
-            MassItem("payload, avionics, and installation hardware", 0.176, 0.00),
+            MassItem("payload, avionics, and installation hardware", 0.1921, 0.00),
         ],
         cases=[FlightCase("Cruise", 12.0, altitude=1400.0, protuberance=0.10)],
     )

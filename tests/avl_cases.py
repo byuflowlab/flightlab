@@ -18,7 +18,9 @@ from pathlib import Path
 import numpy as np
 
 from flightlab import atmos, project_analysis as pa, stability
-from flightlab.project import FlightCase, LiftingSurface, SurfaceStation, blank_project
+from flightlab.project import (
+    FlightCase, LiftingSurface, MassItem, SurfaceStation, blank_project,
+)
 
 G0 = 9.80665
 REFERENCE = Path(__file__).parent / "data" / "avl_reference.json"
@@ -55,7 +57,20 @@ def verification_aircraft():
     project.name = "AVL verification aircraft"
     project.bodies = []
     project.masses = [item for item in project.masses if item.attached_to != "fuselage"]
+    # The comparison must not move when the starter project or the propulsion
+    # catalog changes, so the point masses are pinned here: the payload as it
+    # was when the AVL reference was recorded, and the propulsion components
+    # as two point masses -- the battery (0.115 kg at x = 0.02) and the motor,
+    # ESC and propeller (0.089 kg at x = -0.08) of that day -- so that the
+    # inertia, not only the centre of gravity, is reproduced.
+    project.masses[-1].mass = 0.176
     project.masses[-1].x = 0.21
+    project.propulsion.include_component_masses = False
+    pinned = [
+        MassItem("battery, pinned for the AVL comparison", 0.115, 0.02),
+        MassItem("propulsor hardware, pinned for the AVL comparison", 0.089, -0.08),
+    ]
+    project.masses.extend(pinned)
     for station in project.surfaces[1].stations:
         station.z = 0.15
     for station in project.surfaces[2].stations:
@@ -67,7 +82,10 @@ def verification_aircraft():
             station.z -= mp.z_cg
     for item in project.masses:
         item.x -= mp.x_cg
-        item.z -= mp.z_cg
+        if item not in pinned:
+            # The propulsion rows were never shifted vertically when the
+            # reference was recorded, so the pinned mass stays at z = 0.
+            item.z -= mp.z_cg
     project.propulsion.battery_x -= mp.x_cg
     for propulsor in project.propulsion.propulsors:
         propulsor.x -= mp.x_cg

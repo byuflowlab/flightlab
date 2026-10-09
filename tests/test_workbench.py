@@ -44,9 +44,9 @@ def test_workbench_builds_and_runs_integrated_analysis():
     assert "marker" in workbench.mass_results.value.columns
     assert "Trim CL" in workbench.analysis_metrics.object
     assert "Total CD" in workbench.analysis_metrics.object
-    assert "M1000" in set(workbench.motor_table.value["key"])
+    assert "M1100" in set(workbench.motor_table.value["key"])
     assert len(workbench.propulsor_table.value) == 1
-    assert "Propulsion battery (B3S1300)" in set(workbench.mass_results.value["component"])
+    assert "Propulsion battery (B3S1000)" in set(workbench.mass_results.value["component"])
     # CG is always visible; individual mass markers are an optional uncluttering overlay.
     assert len(workbench.geometry_plot.object.axes[0].collections) == 1
     workbench.show_mass_components.value = True
@@ -230,10 +230,10 @@ def test_workbench_exports_analysis_and_propulsion_sweeps_as_csv():
     assert not workbench.analysis_span_download.disabled
 
     workbench.propulsion_speed_min.value = 6.0
-    workbench.propulsion_speed_max.value = 35.0
+    workbench.propulsion_speed_max.value = 20.0
     workbench.propulsion_speed_points.value = 30
     assert "speed=propulsion_speed" in workbench.python_output.object
-    assert "np.linspace(6, 35, 30)" in workbench.python_output.object
+    assert "np.linspace(6, 20, 30)" in workbench.python_output.object
     assert "analyze_dynamic_stability(\n    project, case, ns=28, nc=4" in workbench.python_output.object
     workbench.run_propulsion_analysis()
     sweep = pd.read_csv(workbench._download_propulsion_csv())
@@ -245,7 +245,7 @@ def test_workbench_exports_analysis_and_propulsion_sweeps_as_csv():
     } <= set(sweep.columns)
     assert len(sweep) == 30
     assert sweep["speed_true_m_s"].iloc[0] == pytest.approx(6.0)
-    assert sweep["speed_true_m_s"].iloc[-1] == pytest.approx(35.0)
+    assert sweep["speed_true_m_s"].iloc[-1] == pytest.approx(20.0)
     assert np.all(np.diff(sweep["speed_true_m_s"]) > 0.0)
     assert (sweep["thrust_available_N"] > 0.0).all()
     assert not workbench.propulsion_download.disabled

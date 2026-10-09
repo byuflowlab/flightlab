@@ -399,7 +399,7 @@ class Case:
         if missing:
             raise ValueError(
                 f"{self.base.label} has no {', '.join(missing)} set.  Assign "
-                f"them, e.g. case.prop.motor = 'M1000', or pick from "
+                f"them, e.g. case.prop.motor = 'M1260', or pick from "
                 "flightlab.catalog."
             )
 
