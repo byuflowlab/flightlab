@@ -252,6 +252,57 @@ def _records(frame: pd.DataFrame):
     return frame.replace({np.nan: None}).to_dict(orient="records")
 
 
+_UIUC_RPM = re.compile(r"_(\d{3,5})(?:\.[A-Za-z]+)?$")
+
+
+def _parse_propeller_upload(data: bytes, filename: str = "") -> pd.DataFrame:
+    """Rows of ``rpm, J, CT, CP`` from an uploaded propeller file.
+
+    Three layouts are accepted:
+
+    * a CSV with ``rpm``, ``J``, ``CT`` and ``CP`` columns (any order, any case);
+    * a UIUC advance-ratio file, whitespace columns ``J CT CP eta`` with the
+      run's rpm as the last number of the filename (``apcsp_10x8_pg0799_5008.txt``);
+    * a UIUC static file, whitespace columns ``RPM CT CP``, stored at ``J = 0``.
+    """
+    text = data.decode("utf-8", errors="replace")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise ValueError("the file is empty")
+    header = [token.strip().lower() for token in re.split(r"[,\s]+", lines[0].strip()) if token.strip()]
+    if {"rpm", "j", "ct", "cp"} <= set(header) and "," in lines[0]:
+        frame = pd.read_csv(io.StringIO(text))
+        normalized = {str(column).strip().lower(): column for column in frame.columns}
+        selected = frame[[normalized[name] for name in ("rpm", "j", "ct", "cp")]].copy()
+        selected.columns = ["rpm", "J", "CT", "CP"]
+        return selected.astype(float)
+    rows = []
+    for line in lines:
+        parts = line.replace(",", " ").split()
+        try:
+            rows.append([float(value) for value in parts])
+        except ValueError:
+            continue  # the header line
+    if not rows:
+        raise ValueError("no numeric rows found")
+    width = min(len(row) for row in rows)
+    table = np.array([row[:width] for row in rows], dtype=float)
+    if header[:3] == ["rpm", "ct", "cp"] or (header[0] == "rpm" and width == 3):
+        return pd.DataFrame({"rpm": table[:, 0], "J": 0.0, "CT": table[:, 1], "CP": table[:, 2]})
+    if header[:3] == ["j", "ct", "cp"] or width >= 3:
+        stem = Path(filename).name
+        match = _UIUC_RPM.search(stem)
+        if match is None:
+            raise ValueError(
+                "a J, CT, CP file needs its rpm as the last number of the filename, "
+                "as the UIUC files have it (for example apcsp_10x8_pg0799_5008.txt), "
+                "or use a CSV with an rpm column"
+            )
+        rpm = float(match.group(1))
+        return pd.DataFrame({"rpm": rpm, "J": table[:, 0], "CT": table[:, 1], "CP": table[:, 2]})
+    raise ValueError("expected a CSV with rpm, J, CT, CP columns or a UIUC data file")
+
+
 def _coerce_records(frame: pd.DataFrame, schema, table_name: str):
     """Convert editable-table values with errors that identify row and field."""
     rows = []
@@ -337,7 +388,9 @@ def _span_positions(view, surface: LiftingSurface) -> np.ndarray:
 
     ``view.y`` is fine for a flat wing but collapses to a single value on a
     fin and understates the arc length on a V-tail, so span-load plots use
-    this path coordinate instead.
+    this path coordinate instead.  It is measured in the y-z plane, sweep
+    excluded, so it ends at the surface's half-span and matches the station
+    coordinate the project uses.
     """
     one_side = view.ds / (2.0 if surface.symmetric else 1.0)
     return np.cumsum(one_side) - 0.5 * one_side
@@ -1238,6 +1291,7 @@ class Workbench:
             "efficiency_motor": result.efficiency_motor,
             "efficiency_propeller": result.efficiency_propeller,
             "efficiency_esc": result.efficiency_esc,
+            "efficiency_battery": result.efficiency_battery,
             "efficiency_total": result.efficiency_total,
             "outside_propeller_data": result.extrapolated,
         }
@@ -1813,16 +1867,17 @@ class Workbench:
     def _propeller_data_uploaded(self, event):
         if not event.new or self.propeller_data_select.value not in self.project.propellers:
             return
+        filename = (self.propeller_data_upload.filename or "").strip()
         self.propeller_data_upload.clear()
         try:
-            frame = pd.read_csv(io.BytesIO(event.new))
-            normalized = {str(column).strip().lower(): column for column in frame.columns}
-            required = {"rpm", "j", "ct", "cp"}
-            if not required <= set(normalized):
-                raise ValueError("CSV needs columns rpm, J, CT, and CP")
-            selected = frame[[normalized[name] for name in ("rpm", "j", "ct", "cp")]].copy()
-            selected.columns = ["rpm", "J", "CT", "CP"]
-            self.propeller_data_table.value = selected
+            imported = _parse_propeller_upload(event.new, filename)
+            existing = self.propeller_data_table.value
+            if existing is not None and len(existing):
+                combined = pd.concat([existing[["rpm", "J", "CT", "CP"]], imported], ignore_index=True)
+                combined = combined.drop_duplicates(subset=["rpm", "J"], keep="last")
+            else:
+                combined = imported
+            self.propeller_data_table.value = combined.reset_index(drop=True)
         except Exception as exc:
             self._error(f"Could not import propeller data: {exc}")
 
@@ -2337,7 +2392,13 @@ class Workbench:
             self.body_results.value = pd.DataFrame([{"result": f"Unavailable: {exc}"}])
 
     def _estimate_stall_from_polar(self, case, polar):
-        """Find where the first local section reaches its airfoil clmax."""
+        """Find where the first local section reaches its airfoil clmax.
+
+        The margin is taken on the magnitude of the section cl, so a fin or a
+        winglet loaded on either side counts.  For a symmetric section the
+        negative limit is exactly minus clmax; for a cambered one it is an
+        approximation, since the polars are not swept to the negative stall.
+        """
         first = polar.solutions[0]
         limits = {}
         for name in first.surfaces:
@@ -2345,7 +2406,7 @@ class Workbench:
             limits[name] = surface_section_cl_max(self.project, surface, first, case)
         margins = np.array([
             min(
-                float(np.min(limits[name] - solution.surface(name).cl))
+                float(np.min(limits[name] - np.abs(solution.surface(name).cl)))
                 for name in solution.surfaces
             )
             for solution in polar.solutions
@@ -2373,15 +2434,18 @@ class Workbench:
             high_view = polar.solutions[upper].surface(name)
             position = _span_positions(low_view, self.project.surface_named(name))
             local_cl = low_view.cl + fraction * (high_view.cl - low_view.cl)
-            local_margin = limits[name] - local_cl
+            local_margin = limits[name] - np.abs(local_cl)
             index = int(np.argmin(local_margin))
             if local_margin[index] < critical_margin:
                 critical_margin = float(local_margin[index])
                 critical = (name, index, float(position[index]))
+            # Draw the limit on the side the surface is loaded, so the gap on
+            # the plot is the margin that was checked.
+            side = -1.0 if np.sum(local_cl * low_view.ds) < 0.0 else 1.0
             distributions[name] = {
                 "s": position,
                 "cl": local_cl,
-                "cl_max": limits[name],
+                "cl_max": side * limits[name],
             }
         return {
             "reached": reached,
@@ -2532,6 +2596,7 @@ class Workbench:
         ax.legend(fontsize=8)
 
         ax = axes[2, 0]
+        primary = self.project.primary_surface
         for name in solution.surfaces:
             surface = self.project.surface_named(name)
             if surface is None:
@@ -2542,7 +2607,10 @@ class Workbench:
                 np.r_[0.0, position], np.r_[view.ccl[0], view.ccl],
                 label=f"{surface.name} actual",
             )[0]
-            if not surface.is_vertical:
+            # One ellipse, on the wing that carries the aircraft.  A tail or a
+            # winglet is not trying to be elliptical, and the whole-aircraft
+            # answer is the span efficiency in the title.
+            if surface.name == primary.name and not surface.is_vertical and surface.span > 0.0:
                 eta = np.clip(2.0 * position / surface.span, 0.0, 1.0)
                 ellipse_shape = np.sqrt(np.clip(1.0 - eta**2, 0.0, None))
                 denominator = np.sum(ellipse_shape * view.ds)
@@ -2550,12 +2618,14 @@ class Workbench:
                     np.sum(view.ccl * view.ds) / max(abs(denominator), 1e-30)
                 )
                 ax.plot(
-                    np.r_[0.0, position], np.r_[ellipse[0], ellipse], "--",
+                    np.r_[0.0, position, 0.5 * surface.span],
+                    np.r_[ellipse[0], ellipse, 0.0], "--",
                     color=line.get_color(), label=f"{surface.name} same-lift ellipse",
                 )
         ax.set(
-            xlabel="distance along surface from root [m]", ylabel="$c c_l$ [m]",
-            title="All-surface loading; per-wing same-lift ellipses",
+            xlabel="distance along surface from root [m]",
+            ylabel=r"$c\,c_l$ [m], normal to each surface",
+            title=f"All-surface loading; span efficiency $e$ = {solution.e_inv:.3f}",
         )
         ax.legend(fontsize=7, ncol=2)
 
@@ -2771,7 +2841,7 @@ class Workbench:
             self.propulsion_metrics.object = self._metric_cards([
                 ("Thrust at case speed", f"{point.thrust:.3f} N"),
                 ("Propulsors", str(len(point.propulsors))),
-                ("Shared bus voltage", f"{point.bus_voltage:.2f} V"),
+                ("Shared bus voltage", f"{point.bus_voltage:.2f} V of {point.open_circuit_voltage:.2f} V open circuit"),
                 ("Battery current", f"{point.current:.2f} A"),
                 ("Total electrical power", f"{point.power_electrical:.1f} W"),
                 ("Total shaft power", f"{point.power_shaft:.1f} W"),
@@ -2804,6 +2874,7 @@ class Workbench:
             ax.plot(result.speed, 100 * result.efficiency_motor, label="motor")
             ax.plot(result.speed, 100 * result.efficiency_propeller, label="propeller")
             ax.plot(result.speed, 100 * result.efficiency_esc, label="ESC")
+            ax.plot(result.speed, 100 * result.efficiency_battery, label="battery")
             ax.plot(result.speed, 100 * result.efficiency_total, lw=2.2, label="overall")
             ax.set(ylabel="efficiency [%]", title="Component efficiencies")
             ax.legend(fontsize=8)
@@ -3101,10 +3172,13 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             "Span-loading values are reported at panel centers. Results are cached by flight-case name. "
             "Any geometry or panel-count edit deletes every cached case, so stale results cannot be "
             "revisited. Every analyzed surface is plotted against distance from its root measured along "
-            "the surface; each horizontal surface also "
-            "gets its own same-lift ellipse. For a biplane these are separate diagnostics, not a single "
-            "whole-aircraft optimum. Aircraft CLmax is estimated where the first local section cl "
-            "touches its airfoil clmax at the strip Reynolds number.",
+            "the surface in the y-z plane, so a swept wing still ends at its half-span. Section cl is the "
+            "force normal to each surface per unit of that width, so a fin or winglet shows its side load. "
+            "Only the reference wing gets a same-lift ellipse; the span efficiency in the title is the "
+            "whole-aircraft measure, and it covers a biplane or a winglet where no single ellipse is the "
+            "optimum. Aircraft CLmax is estimated where the first local section cl, in magnitude, "
+            "touches its airfoil clmax at the strip Reynolds number, on any surface including a fin "
+            "or winglet loaded on either side; the clmax line is drawn on the side each surface is loaded.",
             alert_type="light",
         )
         loads_help = pn.pane.Alert(
@@ -3187,8 +3261,12 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
             pn.pane.Alert(
                 "Catalog entries are copied into this project and are fully editable: motor values are "
                 "SunnySky datasheet figures and battery cell resistance is an estimate, so edit either here. "
-                "For a measured propeller, add its diameter and pitch in metres, then import or edit rows "
-                "with `rpm, J, CT, CP`; project points override the bundled dataset. All definitions are "
+                "To add a propeller: press **Add propeller**, set its diameter and pitch in metres (leave "
+                "`data` blank), choose it in the **Propeller coefficient dataset** list, then import its "
+                "files. UIUC files are accepted as downloaded, one at a time: the static file (`RPM CT CP`) "
+                "and each advance-ratio file (`J CT CP eta`, rpm taken from the filename). A CSV with "
+                "`rpm, J, CT, CP` columns also works. Each import adds rows to the selected propeller; delete "
+                "rows to start over. Entered points override the bundled dataset, and all definitions are "
                 "saved inside the `.flightlab.json` project.",
                 alert_type="light",
             ),

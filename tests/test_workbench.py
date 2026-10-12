@@ -505,3 +505,106 @@ def test_python_tab_is_syntax_highlighted():
     for pane in (workbench.python_guide, workbench.python_output):
         html = html_module.unescape(pane._transform_object(pane.object)["object"])
         assert 'class="codehilite"' in html and 'class="kn"' in html
+
+
+def test_propeller_upload_accepts_uiuc_files_and_csv():
+    from flightlab.workbench import _parse_propeller_upload
+
+    static = b"RPM    CT       CP\n1759   0.1010   0.0720\n2129   0.1037   0.0724\n"
+    frame = _parse_propeller_upload(static, "apcsp_10x8_static_pg0794.txt")
+    assert list(frame.columns) == ["rpm", "J", "CT", "CP"]
+    assert (frame["J"] == 0.0).all()
+    assert frame["rpm"].tolist() == [1759.0, 2129.0]
+
+    sweep = b"J       CT       CP       eta\n0.486   0.0907   0.0662   0.666\n0.927   -0.0009   0.0127   -0.063\n"
+    frame = _parse_propeller_upload(sweep, "apcsp_10x8_pg0799_5008.txt")
+    assert (frame["rpm"] == 5008.0).all()
+    assert frame["CT"].iloc[-1] == pytest.approx(-0.0009)
+
+    with pytest.raises(ValueError, match="rpm as the last number of the filename"):
+        _parse_propeller_upload(sweep, "mystery.txt")
+
+    csv = b"CP,J,rpm,CT\n0.0662,0.486,5008,0.0907\n"
+    frame = _parse_propeller_upload(csv, "anything.csv")
+    assert frame.iloc[0].tolist() == pytest.approx([5008.0, 0.486, 0.0907, 0.0662])
+
+
+def test_an_added_propeller_can_be_built_from_uploaded_uiuc_files_and_run():
+    import types
+    from dataclasses import asdict
+
+    from flightlab.project import PropellerDefinition
+
+    workbench = Workbench()
+    workbench._append_table_row(workbench.propeller_table, {
+        key: value for key, value in asdict(
+            PropellerDefinition("prop_new", "APC Sport 10x8", 0.02, diameter=0.254, pitch=0.2032)
+        ).items() if key != "points"
+    })
+    assert "prop_new" in workbench.project.propellers
+    workbench.propeller_data_select.value = "prop_new"
+    files = {
+        "apcsp_10x8_static_pg0794.txt": b"RPM CT CP\n3000 0.106 0.072\n6000 0.107 0.071\n",
+        "apcsp_10x8_pg0799_5008.txt": (
+            b"J CT CP eta\n0.486 0.0907 0.0662 0.666\n0.696 0.0470 0.0469 0.697\n"
+            b"0.899 0.0048 0.0174 0.250\n0.927 -0.0009 0.0127 -0.063\n"
+        ),
+        "apcsp_10x8_pg0801_6009.txt": (
+            b"J CT CP eta\n0.410 0.1002 0.0666 0.618\n0.700 0.0460 0.0470 0.685\n"
+            b"0.912 0.0054 0.0174 0.284\n"
+        ),
+    }
+    for name, data in files.items():
+        workbench.propeller_data_upload.filename = name
+        workbench._propeller_data_uploaded(types.SimpleNamespace(new=data))
+        assert workbench.status.alert_type != "danger", workbench.status.object
+    points = workbench.project.propellers["prop_new"].points
+    assert len(points) == 2 + 4 + 3, "every import adds its rows"
+    assert any(point.CT < 0 for point in points), "the windmilling point is kept"
+    model = workbench.project.propellers["prop_new"].model()
+    assert model.has_static
+    assert model.n_range == pytest.approx((5008.0 / 60.0, 6009.0 / 60.0))
+
+    frame = workbench.propulsor_table.value.copy()
+    frame.loc[0, "propeller"] = "prop_new"
+    workbench.propulsor_table.value = frame
+    workbench.run_propulsion_analysis()
+    assert workbench.status.alert_type == "success", workbench.propulsion_warnings.object
+    assert workbench.propulsor_results.value["propeller efficiency"].iloc[0] > 0.0
+
+
+def test_loading_plot_shares_one_span_coordinate_and_draws_one_ellipse():
+    from test_project_analysis import swept_wing_with_winglets
+
+    workbench = Workbench(swept_wing_with_winglets())
+    workbench.run_integrated_analysis()
+    assert workbench.status.alert_type == "success", workbench.analysis_warnings.object
+
+    loading = workbench.analysis_plots.object.axes[4]
+    lines = {line.get_label(): line for line in loading.lines}
+    ellipses = [label for label in lines if "ellipse" in label]
+    assert ellipses == ["Main wing same-lift ellipse"]
+    half_span = 0.5 * workbench.project.surface_named("Main wing").span
+    actual, ellipse = lines["Main wing actual"], lines[ellipses[0]]
+    # Both curves end at the half-span measured in the y-z plane, sweep
+    # excluded, and the ellipse reaches zero only at the tip.
+    assert actual.get_xdata().max() == pytest.approx(half_span, abs=2e-3)
+    assert ellipse.get_xdata().max() == pytest.approx(half_span, abs=1e-9)
+    assert np.all(ellipse.get_ydata()[:-1] > 0.0)
+    assert "span efficiency" in loading.get_title()
+    # The winglets draw their side load rather than a zero vertical component,
+    # here and in the stall-margin plot beside it.
+    stall = workbench.analysis_plots.object.axes[5]
+    stall_lines = {line.get_label(): line for line in stall.lines}
+    for name in ("Winglet down", "Winglet up"):
+        assert np.max(np.abs(lines[f"{name} actual"].get_ydata())) > 1e-4
+        assert np.max(np.abs(stall_lines[f"{name} $c_l$"].get_ydata())) > 1e-3
+    # The stall margin is taken on the magnitude of cl, and the limit line is
+    # drawn on the side each surface is loaded: these winglets, listed from
+    # the free end inward, both read negative.
+    for name in ("Winglet down", "Winglet up"):
+        assert np.all(stall_lines[f"{name} $c_{{l,max}}$"].get_ydata() < 0.0)
+        assert np.mean(stall_lines[f"{name} $c_l$"].get_ydata()) < 0.0
+    distributions = workbench._last_stall["distributions"]
+    for name, distribution in distributions.items():
+        assert np.all(np.abs(distribution["cl"]) <= np.abs(distribution["cl_max"]))

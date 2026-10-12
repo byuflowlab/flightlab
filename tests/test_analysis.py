@@ -992,3 +992,110 @@ def test_rc1s_pod_uses_the_low_re_hoerner_model():
     assert pod.f == pytest.approx(pod.cf * pod.FF * pod.S_wet)
     assert 0.10 < pod.cd_frontal < 0.20
     assert "CD_fr" in b.table()
+
+
+def test_chain_efficiency_is_the_product_of_its_four_stages():
+    """Battery, ESC, motor, and propeller each appear exactly once.
+
+    An earlier version applied the ESC efficiency to the shaft torque as well
+    as to the electrical power, so the reported total was the ESC efficiency
+    squared times the rest, and the printed breakdown did not multiply out to
+    its own number.  The battery's own loss was not reported at all.
+    """
+    from flightlab import catalog
+
+    op = propulsion.operating_point("M1260", "apcsf_9x4.7", "B3S1000", V=10.0,
+                                    throttle=0.7, soc=0.8)
+    assert op.efficiency_total == pytest.approx(
+        op.efficiency_battery * op.efficiency_esc
+        * op.efficiency_motor * op.efficiency_prop, rel=1e-9,
+    )
+    # the torque balance is between the motor and the propeller alone
+    mp = propulsion.motor_point("M1260", op.voltage, op.omega)
+    assert mp.torque == pytest.approx(op.torque, rel=1e-6)
+    assert op.efficiency_motor == pytest.approx(mp.efficiency, rel=1e-9)
+    # the pack sees the duty-cycled current, divided by the ESC efficiency
+    esc = list(catalog.ESCS.values())[0]
+    assert op.current_battery == pytest.approx(
+        op.throttle * op.current / esc.efficiency, rel=1e-9
+    )
+    assert op.voltage_battery == pytest.approx(
+        propulsion.battery_voltage("B3S1000", op.current_battery, 0.8), rel=1e-9
+    )
+    assert op.voltage_open_circuit == pytest.approx(
+        propulsion.battery_voltage("B3S1000", 0.0, 0.8)
+    )
+    assert op.efficiency_battery == pytest.approx(
+        op.voltage_battery / op.voltage_open_circuit
+    )
+    assert 0.0 < op.efficiency_battery < 1.0
+
+
+def test_the_chain_matches_a_hand_calculation_at_fixed_rotation_speed():
+    """Working the chain backwards from the propeller gives the same numbers.
+
+    This is the homework calculation: at a given airspeed and shaft speed the
+    propeller fixes the torque, the three-parameter motor model gives the
+    current and voltage, and the pack's quadratic gives the current that
+    delivers that power through its internal resistance.  With an ideal ESC
+    the solver must agree with it stage by stage.
+    """
+    from flightlab import atmos, catalog
+
+    motor = catalog.Motor("hw", "hw", Kv_rpm=800.0, resistance=1.2,
+                          current_no_load=0.2, current_max=50.0, mass=0.2)
+    battery = catalog.Battery("hw", "hw", cells_series=6, cells_parallel=1,
+                              capacity_ah=5.0, mass=0.6, c_rating=20.0,
+                              cell_resistance=0.1)
+    ideal = catalog.ESC("ideal", "ideal", current_max=100.0, mass=0.0, efficiency=1.0)
+    V, throttle, soc = 15.0, 0.6, 0.8
+    op = propulsion.operating_point(motor, "apcsf_10x4.7", battery, V,
+                                    throttle=throttle, soc=soc, esc=ideal)
+    rho = atmos.at(0.0).density
+    prop = propulsion.propeller_model("apcsf_10x4.7")
+    Q = prop.torque(V, op.omega, rho)
+    T = prop.thrust(V, op.omega, rho)
+    Kv = motor.Kv
+    I_m = Q * Kv + motor.current_no_load
+    V_m = I_m * motor.resistance + op.omega / Kv
+    P_m = I_m * V_m
+    ocv = propulsion.battery_voltage(battery, 0.0, soc)
+    R_b = battery.resistance
+    I_b = (ocv - np.sqrt(ocv**2 - 4.0 * R_b * P_m)) / (2.0 * R_b)
+    V_b = ocv - I_b * R_b
+
+    assert op.current == pytest.approx(I_m, rel=1e-6)
+    assert op.voltage == pytest.approx(V_m, rel=1e-6)
+    assert op.current_battery == pytest.approx(I_b, rel=1e-6)
+    assert op.voltage_battery == pytest.approx(V_b, rel=1e-6)
+    assert op.efficiency_prop == pytest.approx(T * V / (Q * op.omega), rel=1e-6)
+    assert op.efficiency_motor == pytest.approx(Q * op.omega / P_m, rel=1e-6)
+    assert op.efficiency_battery == pytest.approx(V_b / ocv, rel=1e-6)
+    assert op.efficiency_total == pytest.approx(T * V / (ocv * I_b), rel=1e-6)
+
+
+def test_motor_losses_split_into_copper_and_core():
+    from flightlab import catalog
+
+    m = catalog.MOTORS["M1400"]
+    mp = propulsion.motor_point(m, 11.1, 900.0)
+    losses = mp.losses
+    assert losses["resistive"] == pytest.approx(mp.current**2 * m.resistance, rel=1e-9)
+    assert losses["core_and_friction"] == pytest.approx(
+        m.current_no_load * (11.1 - mp.current * m.resistance), rel=1e-9
+    )
+    assert losses["total"] == pytest.approx(mp.power_in - mp.power_out, rel=1e-9)
+    assert losses["resistive"] + losses["core_and_friction"] == pytest.approx(losses["total"])
+
+
+def test_project_propeller_points_keep_windmilling_coefficients():
+    points = [
+        {"rpm": 5008, "J": 0.486, "CT": 0.0907, "CP": 0.0662},
+        {"rpm": 5008, "J": 0.899, "CT": 0.0048, "CP": 0.0174},
+        {"rpm": 5008, "J": 0.927, "CT": -0.0009, "CP": 0.0127},
+    ]
+    model = propulsion.PropellerModel.from_points("hw", 0.254, 0.2032, points)
+    assert float(model.CT(0.927, 5008 / 60)) == pytest.approx(-0.0009)
+    assert float(model.efficiency(0.927, 5008 / 60)) < 0.0
+    with pytest.raises(ValueError, match="rpm > 0"):
+        propulsion.PropellerModel.from_points("bad", 0.254, 0.2032, [{**points[0], "rpm": 0}, points[1]])

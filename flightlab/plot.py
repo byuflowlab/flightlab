@@ -1190,7 +1190,8 @@ def chain_breakdown(op, ax=None):
     """
     ax = _ax(ax)
     stages = [
-        ("electrical\nin", op.power_electrical, "C0"),
+        ("from the\ncells", op.voltage_open_circuit * op.current_battery, "C0"),
+        ("pack\nterminals", op.power_electrical, "C0"),
         ("after ESC", op.power_electrical * op.efficiency_esc, "C0"),
         ("shaft", op.power_shaft, "C2"),
         ("useful\n(T x V)", op.power_useful, "C2"),

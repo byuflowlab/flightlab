@@ -14,7 +14,7 @@ and everything else here is either an input to it or a consequence of it.
     >>> from flightlab import propulsion as prop
     >>> op = prop.operating_point("M1100", "apcsf_10x4.7", "B3S1000", V=12.0)
     >>> round(op.thrust, 3), round(op.rpm), round(op.efficiency_total, 4)
-    (11.832, 9940, 0.3838)
+    (12.088, 10025, 0.3602)
 
 Units
 -----
@@ -105,7 +105,9 @@ class PropellerModel:
         ``J``, ``CT``, and ``CP`` columns. At least two nonzero advance-ratio
         points are required. Multiple RPM sweeps improve Reynolds interpolation;
         a single sweep is accepted and duplicated internally without claiming
-        additional measured coverage.
+        additional measured coverage. Points with ``J = 0`` form the static
+        run. Negative ``CT`` or ``CP`` at the high-``J`` end of a measured
+        sweep is real (the propeller is windmilling) and is kept.
         """
         rows = list(points)
         if diameter <= 0 or pitch <= 0:
@@ -119,8 +121,8 @@ class PropellerModel:
             J = float(row["J"])
             CT = float(row["CT"])
             CP = float(row["CP"])
-            if rpm <= 0 or J < 0 or CT < 0 or CP <= 0:
-                raise ValueError("require rpm > 0, J >= 0, CT >= 0, and CP > 0")
+            if rpm <= 0 or J < 0 or not np.isfinite(CT) or not np.isfinite(CP):
+                raise ValueError("require rpm > 0, J >= 0, and finite CT and CP")
             if J == 0.0:
                 static.append((rpm, CT, CP))
             else:
@@ -412,6 +414,7 @@ class MotorPoint:
     power_in: float
     power_out: float
     efficiency: float
+    Kv: float = float("nan")
 
     @property
     def rpm(self) -> float:
@@ -419,12 +422,19 @@ class MotorPoint:
 
     @property
     def losses(self) -> Dict[str, float]:
-        """Where the wasted watts go: copper, iron/friction, and the total."""
+        """Where the wasted watts go: copper, iron/friction, and the total.
+
+        With ``P_in = V I`` and ``P_out = (I - I0)(V - I R)`` the difference is
+        exactly ``I^2 R + I0 (V - I R)``: the copper loss in the winding plus
+        the no-load current carried at the back-EMF voltage, which is how the
+        three-parameter model represents iron and bearing losses.
+        """
+        resistance = (self.voltage - self.omega / self.Kv) / self.current if self.current else 0.0
+        resistive = self.current**2 * resistance
         return {
-            "resistive": self.current**2 * (
-                (self.power_in - self.power_out) / max(self.current**2, 1e-12)
-            ),
-            "total": self.power_in - self.power_out,
+            "resistive": float(resistive),
+            "core_and_friction": float(self.power_in - self.power_out - resistive),
+            "total": float(self.power_in - self.power_out),
         }
 
 
@@ -482,6 +492,7 @@ def motor_point(spec, voltage: float, omega: float) -> MotorPoint:
         power_in=float(p_in),
         power_out=float(p_out),
         efficiency=float(p_out / p_in) if p_in > 0 else 0.0,
+        Kv=float(kv),
     )
 
 
@@ -612,7 +623,21 @@ class OperatingPoint:
     power_electrical, power_shaft, power_useful : float
         W.  ``power_useful`` is ``thrust * V``, which is zero at zero airspeed
         no matter how much noise the propeller makes.
-    efficiency_motor, efficiency_prop, efficiency_esc, efficiency_total : float
+    efficiency_motor, efficiency_prop, efficiency_esc : float
+        Shaft power over motor electrical power; useful power over shaft
+        power; the ESC's assumed constant efficiency.
+    voltage_battery, current_battery : float
+        At the pack terminals, V and A: what a wattmeter between the pack
+        and the ESC reads.  The ESC is a duty-cycle converter, so at part
+        throttle the pack current is below the motor current.
+    voltage_open_circuit : float
+        Pack open-circuit voltage at this state of charge, V.
+    efficiency_battery : float
+        Terminal voltage over open-circuit voltage: the fraction of the
+        power leaving the cells that survives the pack's internal resistance.
+    efficiency_total : float
+        Useful power over the power leaving the cells, ``OCV * I_pack``, so it
+        is the product of the battery, ESC, motor, and propeller efficiencies.
     extrapolated : bool
         True when the **advance ratio** sits outside the measured data, which
         is the coverage question that matters.
@@ -644,6 +669,10 @@ class OperatingPoint:
     reynolds_ratio: float = 1.0
     extrapolated_reason: str = ""
     soc: float = 1.0
+    voltage_battery: float = 0.0
+    current_battery: float = 0.0
+    voltage_open_circuit: float = 0.0
+    efficiency_battery: float = 1.0
 
     @property
     def rpm(self) -> float:
@@ -664,9 +693,12 @@ class OperatingPoint:
             f"thrust          {self.thrust:10.3f} N",
             f"torque          {self.torque:10.5f} N m",
             "",
-            f"pack -> ESC     {self.voltage / max(self.throttle, 1e-9):10.3f} V"
-            f"  at {self.current:.2f} A",
-            f"ESC -> motor    {self.voltage:10.3f} V   "
+            f"open circuit    {self.voltage_open_circuit:10.3f} V",
+            f"pack -> ESC     {self.voltage_battery:10.3f} V"
+            f"  at {self.current_battery:.2f} A   "
+            f"(battery {100 * self.efficiency_battery:.1f}%)",
+            f"ESC -> motor    {self.voltage:10.3f} V"
+            f"  at {self.current:.2f} A   "
             f"(throttle {100 * self.throttle:.0f}%)",
             "",
             f"electrical in   {self.power_electrical:10.2f} W",
@@ -676,7 +708,8 @@ class OperatingPoint:
             f"(prop {100 * self.efficiency_prop:.1f}%)",
             "",
             f"chain efficiency {100 * self.efficiency_total:9.1f}%   "
-            f"= {100 * self.efficiency_esc:.0f}% x "
+            f"= {100 * self.efficiency_battery:.1f}% x "
+            f"{100 * self.efficiency_esc:.0f}% x "
             f"{100 * self.efficiency_motor:.1f}% x "
             f"{100 * self.efficiency_prop:.1f}%",
         ]
@@ -774,8 +807,12 @@ def operating_point(
         return float(supply_voltage) * throttle
 
     def residual(omega):
+        # The ESC is modelled electrically: the motor sees the duty-cycled
+        # voltage and the pack supplies the motor current divided by the ESC
+        # efficiency.  Its loss is therefore already in ``power_electrical``
+        # and must not be applied to the shaft torque as well.
         mp = motor_point(m, terminal_voltage(omega), omega)
-        return mp.torque * eta_esc - p.torque(V, omega, rho)
+        return mp.torque - p.torque(V, omega, rho)
 
     lo, hi = omega_bracket
     try:
@@ -801,6 +838,14 @@ def operating_point(
     p_elec = mp.power_in / eta_esc
     p_useful = T * V
 
+    # The pack: terminal voltage ahead of the ESC's duty cycle, the current it
+    # supplies, and the loss across its own internal resistance.
+    v_batt = v / throttle
+    i_batt = p_elec / v_batt if v_batt > 0 else 0.0
+    ocv = battery_voltage(b, 0.0, soc)
+    eta_batt = v_batt / ocv if ocv > 0 else 0.0
+    p_cells = ocv * i_batt
+
     return OperatingPoint(
         V=float(V),
         omega=float(omega),
@@ -816,11 +861,15 @@ def operating_point(
         efficiency_motor=float(mp.efficiency),
         efficiency_prop=float(p_useful / p_shaft) if p_shaft > 0 else 0.0,
         efficiency_esc=float(eta_esc),
-        efficiency_total=float(p_useful / p_elec) if p_elec > 0 else 0.0,
+        efficiency_total=float(p_useful / p_cells) if p_cells > 0 else 0.0,
         extrapolated=bool(np.any(p.out_of_range(J))),
         reynolds_ratio=float(p.reynolds_ratio(omega * RAD_TO_RPM / 60.0)),
         extrapolated_reason=_coverage_note(p, J, omega),
         soc=float(soc),
+        voltage_battery=float(v_batt),
+        current_battery=float(i_batt),
+        voltage_open_circuit=float(ocv),
+        efficiency_battery=float(eta_batt),
     )
 
 

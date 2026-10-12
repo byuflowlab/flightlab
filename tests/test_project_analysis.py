@@ -319,3 +319,102 @@ def test_propulsion_warns_when_the_propeller_is_spun_past_its_rating():
     project.propellers["P10x4.7"].rpm_max = None
     quiet = analyze_propulsion(project, speed=[9.0])
     assert not any("rpm rating" in w for w in quiet.warnings)
+
+
+def swept_wing_with_winglets():
+    """A swept, tapered flying wing with a split winglet at each tip, built the
+    way a student built one: the winglets are separate mirrored surfaces,
+    listed from the free end inward."""
+    from flightlab.project import LiftingSurface, SurfaceStation, blank_project
+
+    project = blank_project()
+    project.name = "Swept wing with winglets"
+    project.surfaces = [
+        LiftingSurface("Main wing", "elevator", True, [
+            SurfaceStation(0.00, 0.0, 0.0, 0.50, 0.0, "naca2412"),
+            SurfaceStation(0.12, 0.2, 0.0, 0.46, 0.0, "naca2412"),
+            SurfaceStation(0.50, 0.7, 0.0, 0.30, -4.0, "sd7037"),
+        ]),
+        LiftingSurface("Winglet down", "fixed", True, [
+            SurfaceStation(0.7, 0.7, -0.2, 0.1, 0.0, "naca0009"),
+            SurfaceStation(0.5, 0.7, 0.0, 0.3, 0.0, "naca0009"),
+        ]),
+        LiftingSurface("Winglet up", "fixed", True, [
+            SurfaceStation(0.7, 0.7, 0.2, 0.1, 0.0, "naca0009"),
+            SurfaceStation(0.5, 0.7, 0.0, 0.3, 0.0, "naca0009"),
+        ]),
+    ]
+    return project
+
+
+def test_swept_wing_strips_are_booked_per_unit_projected_span():
+    """The lifting-line coefficients come back per unit length along the swept
+    quarter-chord line.  The solution rescales them to the usual definition,
+    streamwise chord times width in the y-z plane, so the strip positions end
+    at the half-span and ``c cl ds`` still sums to the lift.  AVL's strip
+    ``cl`` on this wing agrees with the rescaled values to a few percent; the
+    unscaled ones read 15 percent low outboard, where the sweep is 34 deg."""
+    import numpy as np
+
+    project = swept_wing_with_winglets()
+    wing = project.surface_named("Main wing")
+    solution = analyze(project, alpha=3.0, ns=20, nc=3)
+    view = solution.surface("Main wing")
+
+    half_span = 0.5 * wing.span
+    assert half_span == pytest.approx(0.7)
+    assert np.sum(view.ds) / 2.0 == pytest.approx(half_span, abs=1e-3)
+    positions = np.cumsum(view.ds / 2.0) - 0.25 * view.ds
+    assert positions.max() < half_span
+    assert np.sum(view.ccl * view.ds) * solution.q == pytest.approx(solution.lift, rel=0.03)
+
+    # The rescaling is exactly the ratio of line length to projected width,
+    # 1 / cos(sweep): about 1.21 on the outer panel of this wing.
+    from flightlab.vlm import Stability, lifting_line_coefficients, lifting_line_geometry
+    r_ll, c_ll = lifting_line_geometry(solution._system.grids)
+    cf, _ = lifting_line_coefficients(solution._system, r_ll, c_ll, frame=Stability(), near_field=False)
+    step = np.diff(r_ll[0], axis=1)
+    ratio = np.linalg.norm(step, axis=0) / np.hypot(step[1], step[2])
+    # The washout tilts the outer panel's normal a fraction of a degree off
+    # vertical, which is the only difference from the vertical component.
+    assert view.cl == pytest.approx(cf[0][2, :] * ratio, rel=1e-3)
+    assert ratio[-1] == pytest.approx(1.0 / np.cos(np.radians(34.2)), abs=0.01)
+    assert ratio[0] > 1.1
+
+
+def test_winglets_report_their_side_load_as_section_lift():
+    import numpy as np
+
+    project = swept_wing_with_winglets()
+    solution = analyze(project, alpha=3.0, ns=20, nc=3)
+    for name in ("Winglet down", "Winglet up"):
+        view = solution.surface(name)
+        surface = project.surface_named(name)
+        assert surface.is_vertical
+        assert np.sum(view.ds) / 2.0 == pytest.approx(0.5 * surface.span, abs=1e-6)
+        # The vertical component is zero on a fin; the normal force is not.
+        assert np.max(np.abs(view.cl)) > 1e-3
+        assert surface_section_cl_max(project, surface, solution, project.case()).shape == view.cl.shape
+
+
+def test_station_airfoil_blend_stays_inside_each_interval_on_a_swept_wing():
+    """The strip positions and the station positions are measured the same
+    way, so no strip lands past the tip station with an extrapolated airfoil
+    blend: each strip's interval and blend reproduce its own position."""
+    import numpy as np
+    from flightlab.project_analysis import _station_blend
+
+    project = swept_wing_with_winglets()
+    wing = project.surface_named("Main wing")
+    solution = analyze(project, alpha=3.0, ns=20, nc=3)
+    view = solution.surface("Main wing")
+    interval, blend = _station_blend(wing, view)
+    station_s = np.r_[0.0, np.cumsum(wing.path_lengths())]
+    strip_s = np.cumsum(view.ds / 2.0) - 0.25 * view.ds
+    assert np.all(strip_s < station_s[-1])
+    assert np.all((0.0 < blend) & (blend < 1.0))
+    rebuilt = station_s[interval] + blend * (station_s[interval + 1] - station_s[interval])
+    assert rebuilt == pytest.approx(strip_s, abs=1e-9)
+    # The airfoil changes across the outer interval only.
+    assert set(np.unique(interval)) == {0, 1}
+    assert np.all(np.isfinite(surface_section_cl_max(project, wing, solution, project.case())))

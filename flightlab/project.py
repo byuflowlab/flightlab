@@ -96,9 +96,8 @@ class LiftingSurface:
         """True when the stations run more in z than in y: a fin rather than a wing.
 
         Derived from the geometry, never entered.  It decides which surfaces
-        get a same-lift ellipse in the span-load plot and which are left out of
-        the tail-volume estimate; the vortex lattice takes dihedral from the
-        stations directly.
+        are left out of the tail-volume estimate and how they are drawn; the
+        vortex lattice takes dihedral from the stations directly.
         """
         if len(self.stations) < 2:
             return False

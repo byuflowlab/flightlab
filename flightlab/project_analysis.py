@@ -154,6 +154,7 @@ class PropulsionAnalysis:
     efficiency_motor: np.ndarray
     efficiency_propeller: np.ndarray
     efficiency_esc: np.ndarray
+    efficiency_battery: np.ndarray
     efficiency_total: np.ndarray
     power_electrical: np.ndarray
     power_shaft: np.ndarray
@@ -177,6 +178,8 @@ class PropulsionSystemPoint:
     efficiency_propeller: float
     efficiency_esc: float
     efficiency_total: float
+    open_circuit_voltage: float = 0.0
+    efficiency_battery: float = 1.0
 
     @property
     def extrapolated(self) -> bool:
@@ -184,7 +187,9 @@ class PropulsionSystemPoint:
 
     def table(self) -> str:
         lines = [
-            f"shared bus       {self.bus_voltage:10.3f} V",
+            f"open circuit     {self.open_circuit_voltage:10.3f} V",
+            f"shared bus       {self.bus_voltage:10.3f} V"
+            f"   (battery {100 * self.efficiency_battery:.1f}%)",
             f"battery current {self.current:10.3f} A",
             f"total thrust    {self.thrust:10.3f} N",
             f"electrical in   {self.power_electrical:10.2f} W",
@@ -505,12 +510,27 @@ def _solution(
     for i, name in enumerate(names):
         r_i = r_ll[i]
         y_edge = r_i[1, :]
-        ds = np.linalg.norm(np.diff(r_i, axis=1), axis=0)
+        step = np.diff(r_i, axis=1)  # (3, ns) lifting-line segments
+        # The coefficients come back per unit length *along the line*, sweep
+        # included.  Everything downstream -- the span-load plot, the ellipse,
+        # the station interpolation of airfoils and the stall check -- wants
+        # the usual definition: streamwise chord times width in the y-z
+        # plane.  Rescale so ``c * cl * ds`` still integrates to the lift.
+        ds_line = np.linalg.norm(step, axis=0)
+        ds = np.hypot(step[1], step[2])
+        ratio = np.divide(ds_line, ds, out=np.zeros_like(ds), where=ds > 0.0)
+        # Section lift is the force normal to the surface, so a fin or a
+        # winglet reports its side load instead of a zero vertical component.
+        # The normal is x-hat cross the outward span direction, which is the
+        # side the lattice builds camber toward.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t_y, t_z = np.where(ds > 0.0, step[1] / ds, 1.0), np.where(ds > 0.0, step[2] / ds, 0.0)
+        n_y, n_z = -t_z, t_y
         chord = 0.5 * (c_ll[i][:-1] + c_ll[i][1:])
         ys.append(0.5 * (y_edge[:-1] + y_edge[1:]))
         chords.append(chord)
-        cls.append(cf[i][2, :])
-        cms.append(cm[i][1, :])
+        cls.append((n_y * cf[i][1, :] + n_z * cf[i][2, :]) * ratio)
+        cms.append((t_y * cm[i][1, :] + t_z * cm[i][2, :]) * ratio)
         dss.append(2.0 * ds)  # symmetric solve represents both sides
         slices[name] = slice(start, start + len(ds))
         start += len(ds)
@@ -730,15 +750,31 @@ def run_design_point(
     )
 
 
-def _surface_strip_profile(project, surface, solution, case, section_tables=None):
-    """Return a drag.Row from local section data over one VLM surface."""
-    view = solution.surface(surface.name)
+def _station_blend(surface, view):
+    """Map each VLM strip of ``surface`` onto the station interval it lies in.
+
+    Returns the interval index and the 0-1 blend from its inboard station to
+    its outboard one.  Strip positions and station positions are both measured
+    in the y-z plane from the root, so every strip falls inside a real
+    interval; the clip only absorbs rounding at the tip.
+    """
     ds_one = view.ds / (2.0 if surface.symmetric else 1.0)
     strip_s = np.cumsum(ds_one) - 0.5 * ds_one
     station_s = np.r_[0.0, np.cumsum(surface.path_lengths())]
-    interval = np.clip(np.searchsorted(station_s, strip_s, side="right") - 1, 0, len(surface.stations) - 2)
+    interval = np.clip(
+        np.searchsorted(station_s, strip_s, side="right") - 1,
+        0,
+        len(surface.stations) - 2,
+    )
     denom = np.maximum(station_s[interval + 1] - station_s[interval], 1e-12)
-    blend = (strip_s - station_s[interval]) / denom
+    blend = np.clip((strip_s - station_s[interval]) / denom, 0.0, 1.0)
+    return interval, blend
+
+
+def _surface_strip_profile(project, surface, solution, case, section_tables=None):
+    """Return a drag.Row from local section data over one VLM surface."""
+    view = solution.surface(surface.name)
+    interval, blend = _station_blend(surface, view)
     cd = np.empty_like(view.cl)
     perimeter = np.empty_like(view.cl)
     extrapolated = []
@@ -786,16 +822,7 @@ def surface_section_cl_max(
     """Local section ``cl_max`` at every VLM strip's airfoil and Reynolds number."""
     case = project.case() if case is None else case
     view = solution.surface(surface.name)
-    ds_one = view.ds / (2.0 if surface.symmetric else 1.0)
-    strip_s = np.cumsum(ds_one) - 0.5 * ds_one
-    station_s = np.r_[0.0, np.cumsum(surface.path_lengths())]
-    interval = np.clip(
-        np.searchsorted(station_s, strip_s, side="right") - 1,
-        0,
-        len(surface.stations) - 2,
-    )
-    denom = np.maximum(station_s[interval + 1] - station_s[interval], 1e-12)
-    blend = (strip_s - station_s[interval]) / denom
+    interval, blend = _station_blend(surface, view)
     cl_max = np.empty_like(view.cl)
     options = dict(
         n_crit=case.n_crit,
@@ -1135,15 +1162,19 @@ def _propulsion_system_point(
         * np.cos(np.radians(propulsor.yaw_deg))
         for propulsor, point in zip(setup.propulsors, points)
     ))
+    current = power_electrical / max(bus_voltage, 1e-9)
+    power_cells = float(open_voltage * current)
     return PropulsionSystemPoint(
         propulsors=points, bus_voltage=float(bus_voltage),
-        current=power_electrical / max(bus_voltage, 1e-9), thrust=thrust,
+        current=current, thrust=thrust,
         power_electrical=power_electrical, power_shaft=power_shaft,
         power_useful=power_useful,
         efficiency_motor=power_shaft / motor_input if motor_input > 0 else 0.0,
         efficiency_propeller=power_useful / power_shaft if power_shaft > 0 else 0.0,
         efficiency_esc=motor_input / power_electrical if power_electrical > 0 else 0.0,
-        efficiency_total=power_useful / power_electrical if power_electrical > 0 else 0.0,
+        efficiency_total=power_useful / power_cells if power_cells > 0 else 0.0,
+        open_circuit_voltage=float(open_voltage),
+        efficiency_battery=bus_voltage / open_voltage if open_voltage > 0 else 0.0,
     )
 
 
@@ -1237,6 +1268,7 @@ def analyze_propulsion(
         efficiency_motor=np.array([point.efficiency_motor for point in points]),
         efficiency_propeller=np.array([point.efficiency_propeller for point in points]),
         efficiency_esc=np.array([point.efficiency_esc for point in points]),
+        efficiency_battery=np.array([point.efficiency_battery for point in points]),
         efficiency_total=np.array([point.efficiency_total for point in points]),
         power_electrical=np.array([point.power_electrical for point in points]),
         power_shaft=np.array([point.power_shaft for point in points]),

@@ -83,7 +83,10 @@ class Solution:
         Per-station span loading.  ``y`` is the station centre (m from the
         centreline), ``chord`` the local chord, ``cl`` the local section lift
         coefficient, ``Re`` the local chord Reynolds number, and ``ds`` the
-        station width along the lifting line.
+        station width measured in the y-z plane (both sides of a mirrored
+        surface).  ``cl`` is the force normal to the surface per unit of that
+        width, so a swept wing reads the usual streamwise-chord value and a fin
+        reads its side load; ``c * cl * ds`` sums to the lift on a wing.
     surfaces : tuple of str
         Which surfaces the per-station arrays cover, in order.
     surface_slices : dict
@@ -141,9 +144,12 @@ class Solution:
     def strip_lift(self) -> float:
         """Lift recovered by integrating the strips, N.
 
-        Equals :attr:`lift` to solver precision.  It is worth checking once on
-        any new geometry: if the strips do not integrate to the total, the
-        panelling is not what you think it is.
+        Equals :attr:`lift` to solver precision on a planar aircraft.  It is
+        worth checking once on any new geometry: if the strips do not
+        integrate to the total, the panelling is not what you think it is.
+        Each strip contributes its force normal to its own surface, so a fin
+        or a winglet adds its side load here and the sum then differs from
+        the lift by that amount; check a single wing's view instead.
         """
         return float(np.sum(self.ccl * self.ds)) * self.q
 
