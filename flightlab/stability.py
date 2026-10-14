@@ -303,10 +303,10 @@ def body_derivatives(aircraft: Aircraft, x_cg: Optional[float] = None) -> Dict[s
     """Empirical non-dimensional stability-derivative increments from bodies.
 
     The static pitching increment is the Munk slender-body estimate used by
-    :func:`body_pitching_moment`. Lateral force and damping increments use a
-    strip crossflow model over each body's side projection. The yawing static
-    derivative also includes the destabilizing Munk volume term. These are
-    preliminary-design corrections, not a coupled body-panel solution.
+    :func:`body_pitching_moment`.  The lateral increments come from the
+    slender-body crossflow described under
+    :func:`body_derivative_increments`.  These are preliminary-design
+    corrections, not a coupled body-panel solution.
     """
     w = geom.resolve(aircraft.wing)
     if x_cg is None:
@@ -318,9 +318,25 @@ def body_derivatives(aircraft: Aircraft, x_cg: Optional[float] = None) -> Dict[s
 
 
 def body_derivative_increments(
-    bodies, S_ref: float, b_ref: float, c_ref: float, x_cg: float,
+    bodies, S_ref: float, b_ref: float, c_ref: float, x_cg: float, z_cg: float = 0.0,
 ) -> Dict[str, float]:
-    """The :func:`body_derivatives` increments for bodies on explicit reference quantities."""
+    """The :func:`body_derivatives` increments for bodies on explicit reference quantities.
+
+    Lateral terms use slender-body theory: in sideslip a body carries a side
+    force per unit length of ``-2 q beta dS/dx``, where ``S(x)`` is the
+    cross-section area.  Over a closed body that integrates to no net force
+    and to Munk's destabilizing moment.  On a real fuselage the flow
+    separates once the section stops growing, so the recovery force on the
+    afterbody never appears; the potential force is carried only to the
+    station of maximum section, which leaves the DATCOM side force
+    ``-2 S_max / S_ref`` and a yawing moment smaller than Munk's full-volume
+    value.  The viscous crossflow behind that station is quadratic in sideslip
+    and adds nothing to the linear derivatives.  The rate derivatives come
+    from the same strips with the local sideslip of a rolling or yawing body.
+
+    ``x_cg`` and ``z_cg`` are in the geometry frame (x aft of the nose, z up);
+    the levers are converted to body axes inside.
+    """
     values = {
         "Cm_alpha": body_pitching_slope(bodies, S_ref, c_ref),
         "CY_beta": 0.0, "Cl_beta": 0.0, "Cn_beta": 0.0,
@@ -334,20 +350,27 @@ def body_derivative_increments(
         if diameter is None or height is None or width is None:
             continue
         n = 80
-        u = (np.arange(n) + 0.5) / n
+        edges = np.arange(n + 1) / n
         cone = float(np.clip(getattr(body, "cone_fraction", 0.4), 0.0, 1.0))
         end = cone / 2.0
-        scale = np.ones_like(u)
+        scale = np.ones_like(edges)
         if end > 0:
-            scale = np.minimum(scale, u / end)
-            scale = np.minimum(scale, (1.0 - u) / end)
+            scale = np.minimum(scale, edges / end)
+            scale = np.minimum(scale, (1.0 - edges) / end)
         scale = np.clip(scale, 0.0, 1.0)
+        # Cross-section area at each strip edge, with a virtual zero ahead of
+        # the nose so a blunt nose carries its step in section.
+        section = np.concatenate([[0.0], np.pi * width * height / 4.0 * scale**2])
+        dS = np.diff(section)
+        # Potential crossflow only up to the first station of maximum section.
+        keep = np.arange(n + 1) <= int(np.argmax(section)) - 1
+        dS = np.where(keep, dS, 0.0)
         x0 = body.x_nose or 0.0
-        x = x0 + u * body.length
-        lever = (x - x_cg) / b_ref
-        zbar = float(getattr(body, "z", 0.0)) / b_ref
-        # Crossflow side-force slope on each projected side-area strip.
-        dcy = -2.0 * height * scale * (body.length / n) * body.count / S_ref
+        x = x0 + np.concatenate([[0.0], (edges[:-1] + edges[1:]) / 2.0]) * body.length
+        # Body-axis levers: x forward and z down, from the centre of gravity.
+        lever = (x_cg - x) / b_ref
+        zbar = (z_cg - float(getattr(body, "z", 0.0))) / b_ref
+        dcy = -2.0 * dS * body.count / S_ref
         values["CY_beta"] += float(np.sum(dcy))
         values["Cl_beta"] += float(np.sum(-zbar * dcy))
         values["Cn_beta"] += float(np.sum(lever * dcy))
@@ -357,12 +380,6 @@ def body_derivative_increments(
         values["Cn_p"] += float(np.sum(lever * dcy * (-2.0 * zbar)))
         values["Cl_r"] += float(np.sum(-zbar * dcy * (2.0 * lever)))
         values["Cn_r"] += float(np.sum(dcy * 2.0 * lever**2))
-        # Destabilizing yaw counterpart of the Munk pitch-volume term.
-        volume = (
-            np.pi * width * height / 4.0 * body.length
-            * (1.0 - 2.0 * cone / 3.0) * body.count
-        )
-        values["Cn_beta"] -= 2.0 * volume / (S_ref * b_ref)
     return {key: float(value) for key, value in values.items()}
 
 
@@ -1340,8 +1357,10 @@ def lateral_modes(
     g1 = Ixz / Ixx
     g2 = Ixz / Izz
     den = 1.0 - g1 * g2
-    Lv, Lp, Lr = (Lv + g1 * Nv) / den, (Lp + g1 * Np) / den, (Lr + g1 * Nr) / den
-    Nv, Np, Nr = (Nv + g2 * Lv) / den, (Np + g2 * Lp) / den, (Nr + g2 * Lr) / den
+    Lv, Lp, Lr, Nv, Np, Nr = (
+        (Lv + g1 * Nv) / den, (Lp + g1 * Np) / den, (Lr + g1 * Nr) / den,
+        (Nv + g2 * Lv) / den, (Np + g2 * Lp) / den, (Nr + g2 * Lr) / den,
+    )
 
     A = np.array(
         [

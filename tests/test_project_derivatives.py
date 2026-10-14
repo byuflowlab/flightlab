@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+import numpy as np
 import pytest
 
 from flightlab.project import LiftingSurface, SurfaceStation, example_project
@@ -167,3 +168,63 @@ def test_split_real_pairs_report_the_equivalent_frequency_and_damping():
     assert first.frequency == pytest.approx(np.sqrt(first.real * second.real), rel=1e-9)
     assert 1.0 < first.damping < 1.3
     assert not first.oscillatory
+
+
+def test_body_increments_are_sized_and_signed_like_datcom():
+    """A fuselage is a mild yaw destabilizer with a DATCOM-sized side force,
+    not a fin.  The strip levers are in body axes even though the geometry
+    frame measures x aft and z up."""
+    from flightlab.project import BodyDefinition
+    from flightlab.stability import body_derivative_increments
+
+    S, b, c = 0.2, 1.3, 0.17
+    body = BodyDefinition("fuselage", length=0.9, width=0.11, height=0.13, x_nose=0.0, z=0.0).to_body()
+    inc = body_derivative_increments([body], S, b, c, x_cg=0.29)
+    s_max = np.pi * 0.11 * 0.13 / 4.0
+    assert inc["CY_beta"] == pytest.approx(-2.0 * s_max / S, rel=1e-3)
+    # Destabilizing, but well short of Munk's full-volume value.
+    munk = 2.0 * s_max * 0.9 * (1.0 - 2.0 * 0.4 / 3.0) / (S * b)
+    assert -munk < inc["Cn_beta"] < 0.0
+    assert inc["Cn_r"] < 0.0
+    assert inc["Cl_beta"] == 0.0 and inc["Cl_p"] == 0.0
+
+    # The side force acts ahead of the CG here, so a yaw rate pushes it the
+    # same way as sideslip does at the fin: CY_r carries the sign of CY_beta
+    # times the forward lever.
+    assert inc["CY_r"] < 0.0
+    # A nose further ahead of the CG is more destabilizing.
+    aft_cg = body_derivative_increments([body], S, b, c, x_cg=0.60)
+    assert aft_cg["Cn_beta"] < inc["Cn_beta"]
+
+    # A body below the CG gives positive (anhedral-like) Cl_beta; above, negative.
+    low = body_derivative_increments([body], S, b, c, x_cg=0.29, z_cg=0.10)
+    high = body_derivative_increments([body], S, b, c, x_cg=0.29, z_cg=-0.10)
+    assert low["Cl_beta"] > 0.0 > high["Cl_beta"]
+    assert low["Cl_p"] < 0.0 and high["Cl_p"] < 0.0
+
+
+def test_ixz_coupling_uses_uncoupled_roll_terms():
+    """The yaw row of the Ixz coupling must use the raw roll derivatives, not
+    the already-coupled ones."""
+    from flightlab import stability
+
+    d = derivatives(example_project(), ns=10, nc=3)
+    kw = dict(mass=0.6, Ixx=0.013, Izz=0.033, x_cg=0.3, derivs=d, S_ref=0.2, b_ref=1.3)
+    a = stability.lateral_modes(None, 10.0, 0.0, Ixz=0.004, **kw).A
+    Ixx, Izz, Ixz = 0.013, 0.033, 0.004
+    g1, g2 = Ixz / Ixx, Ixz / Izz
+    den = 1.0 - g1 * g2
+    raw = stability.lateral_modes(None, 10.0, 0.0, Ixz=0.0, **kw).A
+    Lv, Nv = raw[1, 0], raw[2, 0]
+    assert a[1, 0] == pytest.approx((Lv + g1 * Nv) / den)
+    assert a[2, 0] == pytest.approx((Nv + g2 * Lv) / den)
+
+
+def test_demonstrator_with_small_fin_keeps_a_stable_dutch_roll():
+    """A fuselage must not swamp a modest fin: Cn_beta stays positive and the
+    dutch roll damped once the body side force is sized realistically."""
+    project = example_project()
+    modes = analyze_dynamic_stability(project, ns=12, nc=3)
+    assert modes.derivatives.Cn_beta > 0.0
+    dutch = [m for m in modes.lateral.modes if m.name == "dutch roll"]
+    assert dutch and dutch[0].real < 0.0

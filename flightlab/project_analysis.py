@@ -1488,7 +1488,9 @@ def analyze_dynamic_stability(
         project, case, alpha=trimmed.alpha, trim_deflection=trimmed.trim_deflection,
         x_ref=mp.x_cg, ns=ns, nc=nc,
     )
-    body = stability.body_derivative_increments(_bodies(project), S_ref, b_ref, c_ref, mp.x_cg)
+    body = stability.body_derivative_increments(
+        _bodies(project), S_ref, b_ref, c_ref, mp.x_cg, z_cg=mp.z_cg,
+    )
     drag_slope = aircraft_polar(
         project, case,
         alpha=[trimmed.alpha - 0.25, trimmed.alpha + 0.25],
@@ -1531,7 +1533,9 @@ def analyze_dynamic_stability(
         f"Apparent mass of the surrounding air is included, as in AVL: {added.m_z / mp.mass:.0%} of the "
         f"mass in heave, {added.Iyy / mp.Iyy:.0%} of the pitch inertia, {added.Ixx / mp.Ixx:.0%} of the "
         "roll inertia. It slows the short period and roll subsidence of a light model.",
-        "Body increments use slender-body and strip-crossflow correlations, not a coupled body-panel solution.",
+        "Body increments use slender-body crossflow carried to each body's maximum section, "
+        "which gives the DATCOM side force and a yaw moment below Munk's full-volume value; "
+        "they are correlations, not a coupled body-panel solution.",
         "Propulsion speed derivatives assume fixed throttle; nonlinear controls and propeller gyroscopic effects are omitted.",
         "The wake trails straight aft along the body axis, as in AVL. A wake aligned with the flow "
         "changes the tail's downwash enough to move pitch stiffness by 5 to 8 per cent; treat "
