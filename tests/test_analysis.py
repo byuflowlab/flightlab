@@ -1099,3 +1099,29 @@ def test_project_propeller_points_keep_windmilling_coefficients():
     assert float(model.efficiency(0.927, 5008 / 60)) < 0.0
     with pytest.raises(ValueError, match="rpm > 0"):
         propulsion.PropellerModel.from_points("bad", 0.254, 0.2032, [{**points[0], "rpm": 0}, points[1]])
+
+
+def test_propeller_runs_are_read_by_reynolds_number_not_rpm():
+    """The rpm on a UIUC file labels a Reynolds number in the tunnel's air.
+
+    At the tunnel's density a lookup is at the file's rpm.  In thinner air the
+    same rpm is a lower Reynolds number, so the tables are read at a lower
+    equivalent speed, and the coverage note says so.
+    """
+    from flightlab import atmos
+
+    m = propulsion.propeller_model("apce_8x6")
+    n = 5600.0 / 60.0
+    assert float(m.equivalent_speed(n, propulsion.TUNNEL_DENSITY, propulsion.TUNNEL_VISCOSITY)) == pytest.approx(n)
+    provo = atmos.at(1400.0)
+    n_eq = float(m.equivalent_speed(n, provo.density, provo.viscosity))
+    assert n_eq < n
+    assert n_eq == pytest.approx(n * (provo.density / provo.viscosity)
+                                 / (propulsion.TUNNEL_DENSITY / propulsion.TUNNEL_VISCOSITY))
+    # the dimensional thrust still uses the actual density; only the lookup moves
+    omega = 5600.0 * propulsion.RPM_TO_RAD
+    J = 12.0 / (n * m.diameter)
+    expected = float(m.CT(J, n_eq)) * provo.density * n**2 * m.diameter**4
+    assert m.thrust(12.0, omega, provo.density, provo.viscosity) == pytest.approx(expected)
+    op = propulsion.operating_point("M1260", "apcsf_10x4.7", "B3S1000", V=12.0, altitude=1400.0)
+    assert "tunnel run" in op.extrapolated_reason

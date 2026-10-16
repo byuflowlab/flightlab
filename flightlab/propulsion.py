@@ -40,6 +40,8 @@ __all__ = [
     "OperatingPoint",
     "propeller_model",
     "motor",
+    "motor_point",
+    "motor_load_point",
     "battery_voltage",
     "operating_point",
     "thrust_available",
@@ -53,6 +55,14 @@ __all__ = [
 
 RPM_TO_RAD = 2.0 * np.pi / 60.0
 RAD_TO_RPM = 60.0 / (2.0 * np.pi)
+
+#: Air in the UIUC subsonic tunnel where the bundled propeller data were taken:
+#: Urbana, Illinois at room temperature, approximately.  The rpm on each UIUC
+#: file labels a blade Reynolds number in this air; at another density the same
+#: Reynolds number occurs at a different rpm, and that is what the model
+#: interpolates on.
+TUNNEL_DENSITY = 1.17        # kg/m^3
+TUNNEL_VISCOSITY = 1.82e-5   # Pa s
 
 
 # --- the propeller ----------------------------------------------------------
@@ -84,6 +94,11 @@ class PropellerModel:
         The measured advance-ratio range **excluding** the static point.
         Outside it, :meth:`CT` extrapolates and says so through
         :meth:`out_of_range`.
+    reference_density, reference_viscosity : float
+        The air the data were measured in.  The rpm of each run is a label
+        for a blade Reynolds number in that air, so a lookup at another
+        density first converts the shaft speed to the tunnel speed with the
+        same Reynolds number (:meth:`equivalent_speed`).
 
     Notes
     -----
@@ -167,6 +182,8 @@ class PropellerModel:
 
     def _initialize(self, prop, include_static: bool) -> None:
         self._prop = prop
+        self.reference_density = TUNNEL_DENSITY
+        self.reference_viscosity = TUNNEL_VISCOSITY
         self.diameter = self._prop.diameter
         self.radius = self._prop.radius
         self.disk_area = self._prop.disk_area
@@ -299,12 +316,25 @@ class PropellerModel:
         lo, hi = self.J_range
         return (J > hi) | (J < 0.0)
 
+    def equivalent_speed(self, n, rho: float, mu: float):
+        """The tunnel rev/s with the same blade Reynolds number as ``n`` in air ``rho, mu``.
+
+        Reynolds number goes as ``rho * n * D * c / mu``, and the data's rpm
+        labels were recorded in the tunnel's air.  A propeller at 5600 rpm in
+        the thin air of a mountain field is at the Reynolds number the tunnel
+        saw near 5000 rpm, and that is the speed the tables are read at.
+        """
+        n = np.asarray(n, dtype=float)
+        return n * (rho / mu) / (self.reference_density / self.reference_viscosity)
+
     def reynolds_ratio(self, n) -> np.ndarray:
         """How far outside the measured rotational speeds ``n`` sits, as a ratio.
 
-        Returns 1.0 inside the measured range, ``n / n_max`` above it and
-        ``n_min / n`` below, so the value is always at least 1 and reads as
-        "this many times outside".
+        ``n`` is the tunnel-equivalent speed from :meth:`equivalent_speed`
+        (at the tunnel's own density the two are the same).  Returns 1.0
+        inside the measured range, ``n / n_max`` above it and ``n_min / n``
+        below, so the value is always at least 1 and reads as "this many times
+        outside".
 
         **Rotational speed is not a coverage limit in the way advance ratio
         is.**  The coefficients ``CT`` and ``CP`` are functions of advance
@@ -339,25 +369,36 @@ class PropellerModel:
 
     # -- dimensional -------------------------------------------------------
 
-    def thrust(self, V: float, omega: float, rho: float = 1.225) -> float:
-        """Thrust, N, at speed ``V`` and shaft speed ``omega`` in rad/s."""
+    def thrust(self, V: float, omega: float, rho: float = 1.225,
+               mu: Optional[float] = None) -> float:
+        """Thrust, N, at speed ``V`` and shaft speed ``omega`` in rad/s.
+
+        ``rho`` and ``mu`` are the air the propeller is running in; ``mu``
+        defaults to sea-level standard viscosity.  Both enter the coefficient
+        lookup through the blade Reynolds number as well as the dimensional
+        formula.
+        """
         n = omega * RAD_TO_RPM / 60.0
         if n <= 0:
             return 0.0
         J = V / (n * self.diameter)
-        return float(self.CT(J, n) * rho * n**2 * self.diameter**4)
+        n_eq = self.equivalent_speed(n, rho, _viscosity(mu))
+        return float(self.CT(J, n_eq) * rho * n**2 * self.diameter**4)
 
-    def torque(self, V: float, omega: float, rho: float = 1.225) -> float:
+    def torque(self, V: float, omega: float, rho: float = 1.225,
+               mu: Optional[float] = None) -> float:
         """Shaft torque, N m."""
         n = omega * RAD_TO_RPM / 60.0
         if n <= 0:
             return 0.0
         J = V / (n * self.diameter)
-        return float(self.CQ(J, n) * rho * n**2 * self.diameter**5)
+        n_eq = self.equivalent_speed(n, rho, _viscosity(mu))
+        return float(self.CQ(J, n_eq) * rho * n**2 * self.diameter**5)
 
-    def power(self, V: float, omega: float, rho: float = 1.225) -> float:
+    def power(self, V: float, omega: float, rho: float = 1.225,
+              mu: Optional[float] = None) -> float:
         """Shaft power, W."""
-        return self.torque(V, omega, rho) * omega
+        return self.torque(V, omega, rho, mu) * omega
 
     def advance_ratio(self, V: float, omega: float) -> float:
         """``J = V / (n D)``."""
@@ -375,6 +416,11 @@ class PropellerModel:
 
 
 _PROP_MODELS: Dict[Tuple[str, bool], PropellerModel] = {}
+
+
+def _viscosity(mu: Optional[float]) -> float:
+    """``mu`` as given, or sea-level standard dynamic viscosity."""
+    return float(atmos.SEA_LEVEL.viscosity) if mu is None else float(mu)
 
 
 def propeller_model(name, include_static: bool = True) -> PropellerModel:
@@ -493,6 +539,29 @@ def motor_point(spec, voltage: float, omega: float) -> MotorPoint:
         power_out=float(p_out),
         efficiency=float(p_out / p_in) if p_in > 0 else 0.0,
         Kv=float(kv),
+    )
+
+
+def motor_load_point(spec, torque: float, omega: float) -> MotorPoint:
+    """The motor's operating point at a demanded torque and shaft speed.
+
+    This is the chain worked backwards: the propeller fixes the torque at a
+    given speed, and the motor's current, voltage, and efficiency follow with
+    no reference to a battery or a throttle.
+
+        ``I = Q Kv + I0``
+        ``V = I R + omega / Kv``
+    """
+    m = motor(spec)
+    kv = m.Kv_rpm * RPM_TO_RAD
+    current = torque * kv + m.current_no_load
+    voltage = current * m.resistance + omega / kv
+    p_in = voltage * current
+    p_out = torque * omega
+    return MotorPoint(
+        voltage=float(voltage), current=float(current), omega=float(omega),
+        torque=float(torque), power_in=float(p_in), power_out=float(p_out),
+        efficiency=float(p_out / p_in) if p_in > 0 else 0.0, Kv=float(kv),
     )
 
 
@@ -795,7 +864,8 @@ def operating_point(
     m = motor(motor_spec)
     b = battery(battery_spec)
     p = propeller_model(prop_spec)
-    rho = atmos.at(altitude, dT).density
+    air = atmos.at(altitude, dT)
+    rho, mu = air.density, air.viscosity
 
     esc_obj = _resolve_esc(esc)
     eta_esc = esc_obj.efficiency
@@ -812,7 +882,7 @@ def operating_point(
         # efficiency.  Its loss is therefore already in ``power_electrical``
         # and must not be applied to the shaft torque as well.
         mp = motor_point(m, terminal_voltage(omega), omega)
-        return mp.torque - p.torque(V, omega, rho)
+        return mp.torque - p.torque(V, omega, rho, mu)
 
     lo, hi = omega_bracket
     try:
@@ -831,9 +901,10 @@ def operating_point(
     v = terminal_voltage(omega)
     mp = motor_point(m, v, omega)
 
-    T = p.thrust(V, omega, rho)
-    Q = p.torque(V, omega, rho)
+    T = p.thrust(V, omega, rho, mu)
+    Q = p.torque(V, omega, rho, mu)
     J = p.advance_ratio(V, omega)
+    n_eq = float(p.equivalent_speed(omega * RAD_TO_RPM / 60.0, rho, mu))
     p_shaft = Q * omega
     p_elec = mp.power_in / eta_esc
     p_useful = T * V
@@ -863,8 +934,8 @@ def operating_point(
         efficiency_esc=float(eta_esc),
         efficiency_total=float(p_useful / p_cells) if p_cells > 0 else 0.0,
         extrapolated=bool(np.any(p.out_of_range(J))),
-        reynolds_ratio=float(p.reynolds_ratio(omega * RAD_TO_RPM / 60.0)),
-        extrapolated_reason=_coverage_note(p, J, omega),
+        reynolds_ratio=float(p.reynolds_ratio(n_eq)),
+        extrapolated_reason=_coverage_note(p, J, omega, rho, mu),
         soc=float(soc),
         voltage_battery=float(v_batt),
         current_battery=float(i_batt),
@@ -900,10 +971,12 @@ def _sagged_motor_voltage(m, b, omega, throttle, soc, eta_esc) -> float:
     return float(battery_voltage(b, i_pack, soc) * throttle)
 
 
-def _coverage_note(p: PropellerModel, J: float, omega: float) -> str:
+def _coverage_note(p: PropellerModel, J: float, omega: float,
+                   rho: float = 1.225, mu: Optional[float] = None) -> str:
     """A human-readable note on how the operating point sits in the data."""
     n = omega * RAD_TO_RPM / 60.0
-    c = p.coverage(J, n)
+    n_eq = float(p.equivalent_speed(n, rho, _viscosity(mu)))
+    c = p.coverage(J, n_eq)
     notes = []
     if not c["J_ok"]:
         notes.append(
@@ -920,7 +993,8 @@ def _coverage_note(p: PropellerModel, J: float, omega: float) -> str:
     if r > 1.02:
         lo, hi = c["n_range"]
         notes.append(
-            f"{n * 60:.0f} rpm is {r:.2f}x outside the measured "
+            f"{n * 60:.0f} rpm in this air has the blade Reynolds number of a "
+            f"{n_eq * 60:.0f} rpm tunnel run, {r:.2f}x outside the measured "
             f"{lo * 60:.0f}-{hi * 60:.0f} rpm sweeps (a blade Reynolds-number "
             + ("excursion, ordinary at this size)" if r < 2.0
                else "excursion large enough to be worth checking)")

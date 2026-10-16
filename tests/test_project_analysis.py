@@ -3,6 +3,7 @@
 from copy import deepcopy
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
 from flightlab import airfoil, loads, stability
@@ -418,3 +419,36 @@ def test_station_airfoil_blend_stays_inside_each_interval_on_a_swept_wing():
     # The airfoil changes across the outer interval only.
     assert set(np.unique(interval)) == {0, 1}
     assert np.all(np.isfinite(surface_section_cl_max(project, wing, solution, project.case())))
+
+
+def test_propulsion_reports_the_cruise_point_and_the_static_limit_check():
+    """The design is judged where thrust equals drag, not at the entered throttle."""
+    project = example_project()
+    case = project.case()
+    power = analyze_propulsion(project, case, speed=[8.0, case.speed, 16.0])
+    assert power.cruise is not None
+    assert power.cruise.thrust == pytest.approx(power.cruise_drag, rel=1e-4)
+    assert power.cruise_drag == pytest.approx(power.drag_required[1])
+    assert 0.01 <= power.cruise_throttle <= 1.0
+    assert power.cruise.propulsors[0].throttle == pytest.approx(power.cruise_throttle)
+    assert power.cruise_endurance > 0
+    assert power.static is not None
+    assert power.static.propulsors[0].V == 0.0
+    assert power.static.propulsors[0].throttle == pytest.approx(1.0)
+    assert power.static.thrust > power.cruise.thrust
+
+
+def test_propulsion_reports_a_rotation_sweep_for_the_matching_plot():
+    project = example_project()
+    case = project.case()
+    power = analyze_propulsion(project, case, speed=[8.0, case.speed, 16.0])
+    assert len(power.rotation_sweeps) == len(project.propulsion.propulsors)
+    sweep = power.rotation_sweeps[0]
+    assert sweep.speed == case.speed
+    assert sweep.omega[-1] == pytest.approx(sweep.omega_full)
+    assert np.all(np.diff(sweep.omega) > 0)
+    assert np.all(sweep.efficiency_motor <= 1.0) and np.all(sweep.efficiency_prop <= 1.0)
+    assert sweep.omega[0] < sweep.omega_cruise < sweep.omega_full
+    # at the cruise rpm the swept thrust equals the drag the cruise point was solved for
+    thrust_at_cruise = float(np.interp(sweep.omega_cruise, sweep.omega, sweep.thrust))
+    assert thrust_at_cruise == pytest.approx(power.cruise_drag, rel=0.02)

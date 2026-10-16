@@ -608,3 +608,19 @@ def test_loading_plot_shares_one_span_coordinate_and_draws_one_ellipse():
     distributions = workbench._last_stall["distributions"]
     for name, distribution in distributions.items():
         assert np.all(np.abs(distribution["cl"]) <= np.abs(distribution["cl_max"]))
+
+
+def test_loading_a_project_keeps_its_battery_state_of_charge():
+    """Opening a project whose battery differs from the one on screen must not
+    overwrite the loaded state of charge with the stale widget value."""
+    plt.close("all")
+    workbench = Workbench()
+    project = workbench.project
+    project.propulsion.battery = "B2S1500"
+    project.propulsion.state_of_charge = 0.4
+    project.propulsion.battery_x = 0.05
+    workbench._load_project(project)
+    assert workbench.project.propulsion.state_of_charge == pytest.approx(0.4)
+    assert workbench.state_of_charge.value == pytest.approx(0.4)
+    assert workbench.project.propulsion.battery_x == pytest.approx(0.05)
+    assert workbench.battery_select.value == "B2S1500"

@@ -40,6 +40,7 @@ from .project import (
 )
 from .vlm import Cosine
 from .vlm.geometry import spanwise_spacing
+from .propulsion import RAD_TO_RPM
 from .project_analysis import (
     TrimNotPossibleError,
     _grid_for_surface,
@@ -49,7 +50,6 @@ from .project_analysis import (
     aircraft_polar,
     analyze_dynamic_stability,
     analyze_propulsion,
-    propulsion_derivatives,
     run_design_point,
     surface_section_cl_max,
 )
@@ -700,8 +700,8 @@ class Workbench:
             callback=self._download_propulsion_csv, disabled=True,
         )
         self.propulsion_metrics = pn.pane.HTML()
-        self.propulsor_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=150)
-        self.propulsion_plot = pn.pane.Matplotlib(height=560, tight=True, format="svg")
+        self.propulsor_results = pn.widgets.Tabulator(pd.DataFrame(), show_index=False, height=200)
+        self.propulsion_plot = pn.pane.Matplotlib(height=840, tight=True, format="svg")
         self.propulsion_warnings = pn.pane.Alert(alert_type="warning", visible=False)
 
         self.run_dynamics_button = pn.widgets.Button(label="Run dynamic stability", color="primary", icon="player-play")
@@ -1269,6 +1269,30 @@ class Workbench:
         })
         return io.BytesIO(frame.to_csv(index=False).encode("utf-8"))
 
+    @staticmethod
+    def _cruise_and_static_cards(result):
+        """Metric cards for the thrust = drag cruise point and the static limit check."""
+        cards = []
+        if result.cruise is None:
+            cards.append(("Cruise (thrust = drag)", "not reachable at full throttle"))
+        else:
+            cruise = result.cruise
+            cards.extend([
+                ("Cruise throttle (thrust = drag)", f"{100 * result.cruise_throttle:.0f}% for {result.cruise_drag:.2f} N"),
+                ("Cruise battery current", f"{cruise.current:.2f} A"),
+                ("Cruise system efficiency", f"{100 * cruise.efficiency_total:.1f}%"),
+                ("Cruise endurance (80% of pack)", f"{result.cruise_endurance / 60:.1f} min"),
+            ])
+        if result.static is not None:
+            static = result.static
+            fastest = max(unit.rpm for unit in static.propulsors)
+            motor_current = max(unit.current for unit in static.propulsors)
+            cards.extend([
+                ("Static full-throttle thrust", f"{static.thrust:.2f} N at {fastest:.0f} rpm"),
+                ("Static full-throttle current", f"{motor_current:.1f} A in the motor, {static.current:.1f} A from the battery"),
+            ])
+        return cards
+
     def _download_propulsion_csv(self):
         """Export the most recent propulsion/airframe speed sweep."""
         if self._last_propulsion_result is None:
@@ -1725,6 +1749,10 @@ class Workbench:
 
     def _refresh_propulsion_options(self):
         setup = self.project.propulsion
+        # Nested inside a project load this must not clear the caller's guard,
+        # or the next widget assignment fires the edit handler and writes the
+        # stale on-screen values back over the loaded project.
+        was_updating = self._updating
         self._updating = True
         battery_keys = list(self.project.batteries)
         desired = setup.battery if setup else None
@@ -1739,7 +1767,7 @@ class Workbench:
         editors["propeller"] = {"type": "list", "values": list(self.project.propellers)}
         editors["esc"] = {"type": "list", "values": list(self.project.escs)}
         self.propulsor_table.editors = editors
-        self._updating = False
+        self._updating = was_updating
 
     @staticmethod
     def _optional_text(row, name):
@@ -1841,12 +1869,13 @@ class Workbench:
 
     def _show_propeller_points(self):
         definition = self.project.propellers.get(self.propeller_data_select.value)
+        was_updating = self._updating
         self._updating = True
         self.propeller_data_table.value = pd.DataFrame(
             [asdict(point) for point in definition.points] if definition else [],
             columns=["rpm", "J", "CT", "CP"],
         )
-        self._updating = False
+        self._updating = was_updating
 
     def _propeller_data_selected(self, _):
         if not self._updating:
@@ -2836,7 +2865,6 @@ class Workbench:
             case_stem = _safe_filename(case.name).removesuffix(".flightlab.json")
             self.propulsion_download.filename = f"{stem}_{case_stem}_speed_sweep.csv"
             self.propulsion_download.disabled = False
-            derivatives = propulsion_derivatives(self.project, case)
             point = result.operating_point
             self.propulsion_metrics.object = self._metric_cards([
                 ("Thrust at case speed", f"{point.thrust:.3f} N"),
@@ -2846,12 +2874,17 @@ class Workbench:
                 ("Total electrical power", f"{point.power_electrical:.1f} W"),
                 ("Total shaft power", f"{point.power_shaft:.1f} W"),
                 ("System efficiency", f"{100 * point.efficiency_total:.1f}%"),
-                ("dT/dV", f"{derivatives.dT_dV:.3f} N/(m/s)"),
-                ("dT/d collective throttle", f"{derivatives.dT_dthrottle:.2f} N"),
-            ])
+            ] + self._cruise_and_static_cards(result))
+            conditions = [("entered throttle", point)]
+            if result.cruise is not None:
+                conditions.append(("cruise, thrust = drag", result.cruise))
+            if result.static is not None:
+                conditions.append(("full throttle, static", result.static))
             self.propulsor_results.value = pd.DataFrame([
                 {
+                    "condition": label,
                     "propulsor": setup.name,
+                    "throttle": round(unit.throttle, 3),
                     "thrust [N]": unit.thrust,
                     "rpm": unit.rpm,
                     "current [A]": unit.current,
@@ -2861,13 +2894,13 @@ class Workbench:
                     "propeller efficiency": unit.efficiency_prop,
                     "extrapolated": unit.extrapolated,
                 }
-                for setup, unit in zip(self.project.propulsion.propulsors, point.propulsors)
+                for label, system in conditions
+                for setup, unit in zip(self.project.propulsion.propulsors, system.propulsors)
             ])
-            fig, axes = plt.subplots(2, 2, figsize=(10.5, 7.2), sharex=True)
+            fig, axes = plt.subplots(3, 2, figsize=(10.5, 10.8))
             ax = axes[0, 0]
             ax.plot(result.speed, result.thrust_available, label="thrust available")
             ax.plot(result.speed, result.drag_required, label="level-flight drag required")
-            ax.axvline(case.speed, color="0.45", ls="--", lw=1)
             ax.set(ylabel="force [N]", title="Propulsion–airframe match")
             ax.legend(fontsize=8)
             ax = axes[0, 1]
@@ -2876,13 +2909,13 @@ class Workbench:
             ax.plot(result.speed, 100 * result.efficiency_esc, label="ESC")
             ax.plot(result.speed, 100 * result.efficiency_battery, label="battery")
             ax.plot(result.speed, 100 * result.efficiency_total, lw=2.2, label="overall")
-            ax.set(ylabel="efficiency [%]", title="Component efficiencies")
+            ax.set(ylabel="efficiency [%]", title="Component efficiencies at the entered throttle")
             ax.legend(fontsize=8)
             ax = axes[1, 0]
             ax.plot(result.speed, result.power_electrical, label="electrical in")
             ax.plot(result.speed, result.power_shaft, label="shaft")
             ax.plot(result.speed, result.power_useful, label="useful T·V")
-            ax.set(xlabel="true airspeed [m/s]", ylabel="power [W]", title="Power flow")
+            ax.set(ylabel="power [W]", title="Power flow")
             ax.legend(fontsize=8)
             ax = axes[1, 1]
             ax.plot(result.speed, result.current, label="battery current [A]")
@@ -2892,10 +2925,36 @@ class Workbench:
                     result.speed, result.rpm[:, index],
                     label=f"{propulsor.name} rpm",
                 )
-            ax.set(xlabel="true airspeed [m/s]", ylabel="current [A]", title="Electrical and shaft loading")
+            ax.set(ylabel="current [A]", title="Electrical and shaft loading")
             ax2.set_ylabel("rpm")
             lines = ax.lines + ax2.lines
             ax.legend(lines, [line.get_label() for line in lines], fontsize=8)
+            for axis in axes[:2].ravel():
+                axis.axvline(case.speed, color="0.45", ls="--", lw=1)
+                axis.set_xlabel("true airspeed [m/s]  (dashed: case speed)")
+
+            # The matching picture: propeller and motor efficiency against
+            # shaft speed at the case speed, with the cruise rpm marked.
+            ax = axes[2, 0]
+            ax_thrust = axes[2, 1]
+            for sweep in result.rotation_sweeps:
+                prefix = f"{sweep.propulsor} " if len(result.rotation_sweeps) > 1 else ""
+                ax.plot(sweep.rpm, 100 * np.clip(sweep.efficiency_prop, 0.0, 1.0), label=f"{prefix}propeller")
+                ax.plot(sweep.rpm, 100 * np.clip(sweep.efficiency_motor, 0.0, 1.0), label=f"{prefix}motor")
+                ax_thrust.plot(sweep.rpm, sweep.thrust, label=f"{prefix}thrust")
+                if np.isfinite(sweep.omega_cruise):
+                    rpm_cruise = sweep.omega_cruise * RAD_TO_RPM
+                    ax.axvline(rpm_cruise, color="0.45", ls="--", lw=1)
+                    ax_thrust.axvline(rpm_cruise, color="0.45", ls="--", lw=1)
+            ax.set(
+                xlabel="rotation speed [rpm]  (dashed: cruise)", ylabel="efficiency [%]", ylim=(0, 100),
+                title=f"Propeller and motor at {case.speed:.1f} m/s, up to full throttle",
+            )
+            ax.legend(fontsize=8)
+            if np.isfinite(result.cruise_drag):
+                ax_thrust.axhline(result.cruise_drag, color="0.45", ls=":", lw=1, label="drag at case speed")
+            ax_thrust.set(xlabel="rotation speed [rpm]  (dashed: cruise)", ylabel="thrust [N]", title="Thrust against rotation speed")
+            ax_thrust.legend(fontsize=8)
             for axis in axes.ravel():
                 axis.grid(alpha=0.25)
             fig.tight_layout()
@@ -3337,7 +3396,7 @@ print("propulsion derivatives =", dynamics.propulsion_increments)
                 "bus, then compares total forward thrust with whole-aircraft drag.",
                 propulsion_controls, propulsion_library,
                 self.propulsion_metrics, self.propulsion_warnings,
-                "### Propulsor results at the selected flight case", self.propulsor_results,
+                "### Propulsor results: entered throttle, cruise point, and full throttle static", self.propulsor_results,
                 self.propulsion_plot,
             )),
             ("Dynamic stability", pn.Column(

@@ -191,7 +191,11 @@ Useful nested results include:
 - `structure.span_load.y`, `lift`, `shear`, `moment`, and `root_moment`;
 - `structure.sizing`, `cap_thickness`, `deflection`, and `EI`;
 - `power.speed`, `thrust_available`, `drag_required`, `current`, `rpm`,
-  efficiency and power arrays, plus `power.extrapolated`;
+  efficiency and power arrays, plus `power.extrapolated`; `power.cruise`
+  (thrust = drag at the case speed) with `power.cruise_throttle` and
+  `power.cruise_endurance`, `power.static` (full throttle, zero airspeed),
+  and `power.rotation_sweeps` (propeller and motor efficiency against shaft
+  speed, one per propulsor);
 - `modes.longitudinal.table()`, `modes.lateral.table()`,
   `modes.derivatives.table()`, `modes.warnings`, and `modes.notes`.
 

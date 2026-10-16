@@ -13,6 +13,7 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+from scipy.optimize import brentq
 
 from . import airfoil, atmos, drag, loads as structural_loads, propulsion, stability, wing
 from .project import AircraftProject, FlightCase, LiftingSurface
@@ -42,6 +43,7 @@ __all__ = [
     "ProjectStructuralAnalysis",
     "PropulsionSystemPoint",
     "PropulsionAnalysis",
+    "RotationSweep",
     "PropulsionDerivatives",
     "DynamicStability",
     "analyze",
@@ -161,6 +163,46 @@ class PropulsionAnalysis:
     power_useful: np.ndarray
     extrapolated: np.ndarray
     warnings: Tuple[str, ...] = ()
+    #: The cruise point: throttle solved so that total thrust equals the
+    #: aircraft's drag at the case speed.  ``None`` when full throttle cannot
+    #: reach that drag.
+    cruise: Optional["PropulsionSystemPoint"] = None
+    cruise_throttle: float = float("nan")
+    cruise_drag: float = float("nan")
+    #: Endurance at the cruise point on 80% of the pack's rated capacity, s.
+    cruise_endurance: float = float("nan")
+    #: Full throttle at zero airspeed: the launch and limit check.
+    static: Optional["PropulsionSystemPoint"] = None
+    #: Propeller and motor efficiency against shaft speed at the case speed,
+    #: one per propulsor: the picture of whether the two are matched.
+    rotation_sweeps: Tuple["RotationSweep", ...] = ()
+
+
+@dataclass(frozen=True)
+class RotationSweep:
+    """Propeller and motor efficiency against shaft speed at one airspeed.
+
+    The chain worked backwards: at each rotation speed the propeller sets the
+    thrust and torque, and the motor's efficiency at that torque and speed
+    follows.  No battery or throttle enters, so the curves show whether the
+    propeller and the motor suit each other at this airspeed.  The sweep runs
+    up to the full-throttle speed on the project's battery.
+    """
+
+    propulsor: str
+    speed: float
+    omega: np.ndarray
+    thrust: np.ndarray
+    torque: np.ndarray
+    efficiency_prop: np.ndarray
+    efficiency_motor: np.ndarray
+    #: Shaft speed at the thrust = drag cruise point; nan when unreachable.
+    omega_cruise: float
+    omega_full: float
+
+    @property
+    def rpm(self) -> np.ndarray:
+        return self.omega * propulsion.RAD_TO_RPM
 
 
 @dataclass(frozen=True)
@@ -1222,15 +1264,144 @@ def analyze_propulsion(
             trim_deflection=trimmed.trim_deflection, x_ref=mp.x_cg,
         ))
     section_tables = _propulsion_profile_tables(project, case, speed)
-    drag_required = []
-    for value, local_case, solution in zip(speed, local_cases, solutions):
+
+    def drag_at(value, local_case, solution):
         q = air.q(float(value))
         buildup = profile_drag_buildup(
             project, solution, local_case, section_tables=section_tables
         )
-        cd = buildup.CD_profile_body + solution.CD_i
-        drag_required.append(cd * q * S)
+        return (buildup.CD_profile_body + solution.CD_i) * q * S
+
+    drag_required = [
+        drag_at(value, local_case, solution)
+        for value, local_case, solution in zip(speed, local_cases, solutions)
+    ]
+    if matching_case.size:
+        cruise_drag = float(drag_required[int(matching_case[0])])
+    else:
+        q = air.q(case.speed)
+        cl = case.load_factor * mp.mass * G0 / (q * S)
+        alpha = trimmed.alpha + (cl - trimmed.solution.CL) / cl_per_degree
+        cruise_drag = float(drag_at(case.speed, case, analyze(
+            project, case, alpha=alpha,
+            trim_deflection=trimmed.trim_deflection, x_ref=mp.x_cg,
+        )))
     warnings = []
+
+    # The cruise point: the collective throttle at which thrust equals drag
+    # at the case speed.  This is the operating point a design is judged on,
+    # and the one the entered throttle rarely hits by accident.
+    throttles = [item.throttle for item in setup.propulsors]
+    offset_lo = max(0.01 - t for t in throttles)
+    offset_hi = min(1.0 - t for t in throttles)
+    cruise = None
+    cruise_throttle = float("nan")
+    cruise_endurance = float("nan")
+    def thrust_at(offset):
+        # Below some throttle the propeller windmills faster than the motor
+        # can turn it and the torque balance has no root; treat that as
+        # "no thrust", which is what it means for the cruise search.
+        try:
+            return _propulsion_system_point(project, case, case.speed, offset).thrust
+        except ValueError:
+            return None
+
+    thrust_full = thrust_at(offset_hi)
+    if thrust_full is None or thrust_full < cruise_drag:
+        warnings.append(
+            f"Full throttle gives {0.0 if thrust_full is None else thrust_full:.2f} N at "
+            f"{case.speed:.1f} m/s, below the {cruise_drag:.2f} N of drag: this propulsion "
+            "system cannot hold the case speed."
+        )
+    else:
+        # Walk the throttle down from full until the thrust falls below the
+        # drag (or the balance disappears), then close the bracket.
+        above = offset_hi
+        below = None
+        for value in np.linspace(offset_hi, offset_lo, 25)[1:]:
+            thrust = thrust_at(value)
+            if thrust is None or thrust < cruise_drag:
+                below = value if thrust is not None else None
+                break
+            above = value
+        if below is None:
+            offset = above
+            if above > offset_lo + 1e-9 and thrust_at(above) is not None:
+                pass  # the balance disappears just below this throttle
+            elif thrust_at(above) >= cruise_drag:
+                warnings.append(
+                    f"Even the lowest throttle gives more than the {cruise_drag:.2f} N of drag "
+                    f"at {case.speed:.1f} m/s; the cruise point is reported at that throttle."
+                )
+        else:
+            offset = brentq(
+                lambda value: thrust_at(value) - cruise_drag, below, above, xtol=1e-6,
+            )
+        cruise = _propulsion_system_point(project, case, case.speed, offset)
+        cruise_throttle = float(np.clip(throttles[0] + offset, 0.01, 1.0))
+        energy = propulsion.pack_energy(battery, 0.8)
+        drawn = cruise.open_circuit_voltage * cruise.current
+        cruise_endurance = float(energy / drawn) if drawn > 0 else float("inf")
+
+    # Propeller and motor efficiency against shaft speed at the case speed,
+    # from windmilling up to full throttle: the matching picture.
+    sweeps = []
+    if thrust_full is not None:
+        full = _propulsion_system_point(project, case, case.speed, offset_hi)
+        for index, (propulsor, unit) in enumerate(zip(setup.propulsors, full.propulsors)):
+            model = project.propeller(propulsor).model()
+            motor = project.motor(propulsor)
+            omega_full = float(unit.omega)
+            omegas = np.linspace(0.3 * omega_full, omega_full, 80)
+            thrusts = np.array([model.thrust(case.speed, w, air.density, air.viscosity) for w in omegas])
+            # Start where the propeller stops windmilling: below that speed it
+            # is a brake, not a propeller, and the efficiencies mean nothing.
+            producing = np.flatnonzero(thrusts > 0.0)
+            if producing.size and producing[0] > 0:
+                omegas = omegas[producing[0]:]
+                thrusts = thrusts[producing[0]:]
+            torques = np.array([model.torque(case.speed, w, air.density, air.viscosity) for w in omegas])
+            shaft = torques * omegas
+            eta_prop = np.where(shaft > 1e-9, thrusts * case.speed / np.where(shaft > 1e-9, shaft, 1.0), 0.0)
+            eta_motor = np.array([
+                propulsion.motor_load_point(motor, max(q, 0.0), w).efficiency if q > 0 else 0.0
+                for q, w in zip(torques, omegas)
+            ])
+            sweeps.append(RotationSweep(
+                propulsor=propulsor.name, speed=float(case.speed), omega=omegas,
+                thrust=thrusts, torque=torques, efficiency_prop=eta_prop,
+                efficiency_motor=eta_motor,
+                omega_cruise=float(cruise.propulsors[index].omega) if cruise is not None else float("nan"),
+                omega_full=omega_full,
+            ))
+
+    # Full throttle at zero airspeed: launch thrust, and where the motor,
+    # ESC, and propeller limits are usually exceeded.
+    static = _propulsion_system_point(project, case, 0.0, 1.0)
+    if static.current > battery.current_max:
+        warnings.append(
+            f"At full throttle, static: battery current {static.current:.1f} A exceeds "
+            f"its {battery.current_max:.1f} A continuous rating."
+        )
+    for propulsor, point in zip(setup.propulsors, static.propulsors):
+        motor = project.motor(propulsor)
+        esc = project.esc(propulsor)
+        rpm_max = project.propeller(propulsor).rpm_max
+        if point.current > motor.current_max:
+            warnings.append(
+                f"At full throttle, static: {propulsor.name} motor current "
+                f"{point.current:.1f} A exceeds the {motor.current_max:.1f} A limit."
+            )
+        if point.current > esc.current_max:
+            warnings.append(
+                f"At full throttle, static: {propulsor.name} current {point.current:.1f} A "
+                f"exceeds the {esc.current_max:.1f} A ESC limit."
+            )
+        if rpm_max is not None and rpm_max > 0 and point.rpm > rpm_max:
+            warnings.append(
+                f"At full throttle, static: {propulsor.name} turns {point.rpm:.0f} rpm, "
+                f"past the propeller's {rpm_max:.0f} rpm rating."
+            )
     if any(point.extrapolated for point in points):
         warnings.append("One or more propeller points extrapolate beyond measured advance-ratio coverage.")
     if at_case.current > battery.current_max:
@@ -1275,6 +1446,9 @@ def analyze_propulsion(
         power_useful=np.array([point.power_useful for point in points]),
         extrapolated=np.array([point.extrapolated for point in points], dtype=bool),
         warnings=tuple(warnings),
+        cruise=cruise, cruise_throttle=cruise_throttle, cruise_drag=cruise_drag,
+        cruise_endurance=cruise_endurance, static=static,
+        rotation_sweeps=tuple(sweeps),
     )
 
 

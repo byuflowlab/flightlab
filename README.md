@@ -193,12 +193,21 @@ surface area when a skin thickness is also supplied. These are explicit mass-dis
 models, not automatic structural-weight predictions.
 
 The **Propulsion** tab starts with copies of the course catalog inside each project. Students
-can edit motor and battery values, add components, and import
-propeller coefficient CSV files with `rpm`, `J`, `CT`, and `CP` columns. The editable component
+can edit motor and battery values, add components, and import propeller data either as UIUC
+files exactly as downloaded (the static file and each advance-ratio file, rpm read from the
+filename) or as a CSV with `rpm`, `J`, `CT`, and `CP` columns. The editable component
 library and measured propeller points are saved in the project JSON; no package source or global
 configuration file needs to be changed. Battery and propulsor positions also place their catalog
 masses in the aircraft mass model when that option is enabled; multiple motor/ESC/propeller rows
 share the selected battery and its total-current voltage sag.
+
+Besides the point at the entered throttle, the analysis reports the **cruise point**, with the
+throttle solved so that thrust equals the airframe's drag at the case speed (battery current,
+system efficiency, and endurance on 80% of the pack), and the **full-throttle static point**
+with warnings against the motor, ESC, and propeller limits. A plot of propeller and motor
+efficiency against rotation speed at the case speed, with the cruise rpm marked, shows whether
+the two are matched. Propeller coefficients are read from the measured runs by blade Reynolds
+number, so the same rpm at a different air density reads a different run.
 
 Use **Save project** to download a human-readable `.flightlab.json` file. The **Python** tab
 shows how to open that same file, inspect and change its geometry and cases, run parameter
