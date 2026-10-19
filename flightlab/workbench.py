@@ -2918,15 +2918,19 @@ class Workbench:
             ax.set(ylabel="power [W]", title="Power flow")
             ax.legend(fontsize=8)
             ax = axes[1, 1]
-            ax.plot(result.speed, result.current, label="battery current [A]")
+            ax.plot(result.speed, result.current, color="C0", label="battery current [A]")
+            # The twin axis restarts the color cycle, so continue it by hand.
             ax2 = ax.twinx()
             for index, propulsor in enumerate(self.project.propulsion.propulsors):
                 ax2.plot(
-                    result.speed, result.rpm[:, index],
+                    result.speed, result.rpm[:, index], color=f"C{index + 1}",
                     label=f"{propulsor.name} rpm",
                 )
             ax.set(ylabel="current [A]", title="Electrical and shaft loading")
-            ax2.set_ylabel("rpm")
+            ax.yaxis.label.set_color("C0")
+            ax.tick_params(axis="y", colors="C0")
+            ax2.set_ylabel("rpm", color="C1")
+            ax2.tick_params(axis="y", colors="C1")
             lines = ax.lines + ax2.lines
             ax.legend(lines, [line.get_label() for line in lines], fontsize=8)
             for axis in axes[:2].ravel():
